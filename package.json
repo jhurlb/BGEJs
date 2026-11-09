@@ -1,6 +1,6 @@
 {
   "name": "bgejs",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "license": "Unlicense",
   "private": true,
   "description": "A small browser game engine: plain script files, no build step needed to use it.",

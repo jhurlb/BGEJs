@@ -640,3 +640,113 @@ test('Particles: curves run from birth whatever the jitter, tables of any size, 
   const D = new X.Particles(50); let calls = 0; D.kind('d', { draw(){}, onDeath(s){ calls++; s.clear(); } });
   for (let i = 0; i < 3; i++) D.spawn('d', 0, 0, 0, 0, 0.1); D.update(0.2); assert.strictEqual(calls, 1); assert.strictEqual(D.count, 0);
 });
+
+// ---- 0.5.0: camera
+
+const run = (cam, secs, dt = 1 / 60) => { for (let i = 0, n = Math.round(secs / dt); i < n; i++) cam.update(dt); };
+
+test('Camera: a deadzone lets the target move freely and only follows what sticks out', () => {
+  const p = { x: 0, y: 0 }, cam = new X.Camera(); cam.follow(p); cam.deadzone = { w: 100, h: 60 };
+  p.x = 40; p.y = -25; cam.update(0.016); near(cam.x, 0); near(cam.y, 0);          // inside the box: no movement
+  p.x = 70; p.y = -50; cam.update(0.016); near(cam.x, 20); near(cam.y, -20);       // the target sits on the box's edge
+  p.x = 60; cam.update(0.016); near(cam.x, 20);                                    // turning back does not drag the camera
+  cam.lag = 0.001; p.x = 170; run(cam, 3); near(cam.x, 120, 0.01);                 // with lag it eases to the edge, not the centre
+  cam.snap(); near(cam.x, 170); near(cam.y, -50);                                  // snap() ignores the box
+});
+
+test('Camera: look-ahead leads by velocity, is capped, and uses measured speed when the target has none', () => {
+  const p = { x: 0, y: 0, vx: 200, vy: 0 }, cam = new X.Camera(); cam.follow(p); cam.lead = 0.5; cam.leadLag = 0;
+  cam.update(0.016); near(cam.x, 100); near(cam.y, 0);
+  p.vx = 5000; cam.update(0.016); near(cam.x, cam.leadMax);
+  cam.leadLag = 0.02; p.vx = -200; cam.update(0.016); assert.ok(cam.x < cam.leadMax && cam.x > -100);   // swings round, not a jump
+  run(cam, 3); near(cam.x, -100, 0.01);
+  p.vx = 200; cam.update(0.016); const mid = cam.x; cam.update(0); assert.strictEqual(cam.x, mid);   // a zero-length update changes nothing, mid-swing
+  p.vx = -200; run(cam, 3);
+  const q = { x: 0, y: 0 }, c2 = new X.Camera(); c2.follow(q); c2.lead = 0.5; c2.leadLag = 0;
+  c2.update(0.1); near(c2.x, 0); q.y = 30; c2.update(0.1); near(c2.y, 30 + 300 * 0.5 > c2.leadMax ? 30 + c2.leadMax : 180);
+  q.y = 30; c2.update(0.1); near(c2.y, 30);                                        // stopped: no lead
+  c2.offset = { x: 10, y: -40 }; c2.update(0.1); near(c2.x, 10); near(c2.y, -10);
+});
+
+test('Camera.frame keeps a group in shot: centres on it and zooms to fit within limits', () => {
+  const a = { x: 0, y: 0 }, b = { x: 400, y: 0, r: 50 }, list = [a, b], cam = new X.Camera();
+  cam.frame(list, { padding: 50, lag: 0 }); cam.update(0.016);
+  near(cam.x, 225); near(cam.y, 0); near(cam.zoom, 1);                             // fits at the default zoom, which is the cap
+  b.x = 2000; cam.update(0.016); near(cam.x, 1025);
+  near(cam.zoom, 800 / (2050 + 100) / (cam.k / cam.zoom));                          // 800 px across a 2,150 unit span
+  assert.ok(cam.view.x0 <= 0 && cam.view.x1 >= 2050);
+  b.x = 1e6; cam.update(0.016); near(cam.zoom, 0.25);                              // minZoom
+  list.pop(); cam.update(0.016); near(cam.x, 0); near(cam.zoom, 1);                // the list is live
+  list.pop(); cam.update(0.016); near(cam.x, 0);                                   // an empty list holds still
+  list.push(a, { x: 3000, y: 0 }); cam.frame(list, { lag: 0.001 }); cam.update(0.016); assert.ok(cam.zoom < 1 && cam.zoom > 0.3 && cam.x > 0 && cam.x < 1500);   // eased
+  cam.snap(); near(cam.x, 1500); near(cam.zoom, 800 / 3160 / (cam.k / cam.zoom));
+  cam.frame(list, { zoom: false, lag: 0 }); cam.zoom = 1; cam.update(0.016); near(cam.zoom, 1); near(cam.x, 1500);
+});
+
+test('Camera: zoomTo eases, zoomAt keeps the point under the cursor, moveTo glides and holds', () => {
+  const cam = new X.Camera(); let done = 0;
+  cam.zoomTo(4, 1, t => t, () => done++); cam.update(0.5); near(cam.zoom, 2); cam.update(0.5); near(cam.zoom, 4); assert.strictEqual(done, 1);
+  cam.update(0.5); near(cam.zoom, 4); assert.strictEqual(done, 1);
+  cam.zoomTo(1); near(cam.zoom, 1);
+  const w = cam.toWorld(650, 120); cam.zoomAt(2.5, 650, 120); const s = cam.toScreen(w.x, w.y); near(s.x, 650); near(s.y, 120); near(cam.zoom, 2.5);
+  const p = { x: 0, y: 0 }, c = new X.Camera(); c.follow(p, 0.001); let arrived = 0;
+  c.moveTo(100, 200, 1, { ease: t => t, zoom: 2, onDone: () => arrived++ }); assert.ok(c.moving);
+  c.update(0.25); near(c.x, 25); near(c.y, 50); near(c.zoom, Math.pow(2, 0.25));  // following waits
+  c.update(0.75); near(c.x, 100); near(c.y, 200); near(c.zoom, 2); assert.strictEqual(arrived, 1); assert.ok(!c.moving && !c.held);
+  run(c, 3); near(c.x, 0, 0.01); near(c.y, 0, 0.01);                               // then following takes over again
+  c.moveTo(50, 50, 0.1, { hold: true }); run(c, 1); near(c.x, 50); assert.ok(c.held);
+  c.release(); run(c, 3); near(c.x, 0, 0.01);
+  c.moveTo(50, 50, 5); c.follow(p); assert.ok(!c.moving); near(c.x, 0);            // follow() cancels a move
+  c.moveTo(9, 9, 0); c.update(0); near(c.x, 9);                                    // no time: there at the next update
+});
+
+test('Camera: a turned view converts both ways, covers a wider rect and stays inside bounds', () => {
+  const cam = new X.Camera(); cam.x = 500; cam.y = 400; cam.angle = Math.PI / 2; cam.update(0);
+  const s = cam.toScreen(500, 300); near(s.x, 400 - 100 * cam.k); near(s.y, 300);   // world "up" appears on the left
+  const out = {}, w = cam.toWorld(123, 456, out); assert.strictEqual(w, out);
+  const back = cam.toScreen(w.x, w.y); near(back.x, 123); near(back.y, 456);
+  near(cam.view.x1 - cam.view.x0, 600 / cam.k); near(cam.view.y1 - cam.view.y0, 800 / cam.k);   // width and height swap
+  const t = []; cam.apply({ setTransform: (...a) => t.push(a) }); const [a, b, c2, d, e, f] = t[0];
+  near(a * 500 + c2 * 300 + e, s.x); near(b * 500 + d * 300 + f, s.y);             // apply() and toScreen() agree
+  cam.bounds = { x0: 0, y0: 0, x1: 2000, y1: 2000 }; cam.x = 0; cam.y = 0; cam.update(0); near(cam.view.x0, 0); near(cam.view.y0, 0);
+  cam.angle = 0; cam.x = 100; cam.y = 50; cam.update(0); t.length = 0; cam.apply({ setTransform: (...a) => t.push(a) }, 0.5);
+  near(t[0][4], 400 - cam.x * 0.5 * cam.k); near(t[0][1], 0);    // parallax scrolls a layer at half speed
+});
+
+test('Camera: directional kicks, roll, smooth shake and shakeScale', () => {
+  const cam = new X.Camera(); cam.update(0.016); const w0 = cam.view.x1 - cam.view.x0;
+  cam.kick(10, 0); cam.update(0); near(cam.ox, 10); near(cam.oy, 0); near(cam.view.x1 - cam.view.x0, w0 + 2 * 10 / cam.k);
+  cam.kick(100, Math.PI / 2); cam.update(0); near(Math.hypot(cam.ox, cam.oy), cam.kickMax);   // capped
+  cam.update(0.25); assert.ok(Math.hypot(cam.ox, cam.oy) < cam.kickMax * Math.exp(-1.9)); run(cam, 2); assert.strictEqual(cam.ox, 0);
+  cam.shakeScale = 0; cam.addTrauma(1); cam.kick(8); cam.kick(8, 1); cam.update(0); assert.strictEqual(cam.ox, 0); assert.strictEqual(cam.oy, 0);
+  near(cam.view.x1 - cam.view.x0, w0);
+  const c = new X.Camera(); c.shakeFreq = 20; c.shakeRoll = 0.1; c.shakeDecay = 0; c.addTrauma(1); c.update(0.001);
+  let big = 0, far = 0, roll = 0, px = c.ox;
+  for (let i = 0; i < 2000; i++) { c.update(0.001); big = Math.max(big, Math.abs(c.ox - px)); far = Math.max(far, Math.abs(c.ox)); roll = Math.max(roll, Math.abs(c.roll)); px = c.ox; }
+  assert.ok(big < 2, `smooth shake jumped ${big}px in 1 ms`); assert.ok(far > 4 && far <= 16); assert.ok(roll > 0.01 && roll <= 0.1);
+  assert.ok(c.view.x1 - c.view.x0 > w0 + 2 * 16 / c.k);                            // the roll widens the view rect too
+  const t = []; c.apply({ setTransform: (...a) => t.push(a) }); assert.ok(t[0][1] !== 0);
+  c.pixelSnap = true; c.x = 0.123; c.apply({ setTransform: (...a) => t.push(a) }); assert.strictEqual(t[1][4], Math.round(t[1][4]));
+});
+
+test('Camera: snap, follow and release during a move; a move takes its zoom with it', () => {
+  const p = { x: 0, y: 0 }, cam = new X.Camera(); let done = 0; cam.follow(p, 0.001);
+  cam.moveTo(500, 500, 2, { zoom: 2, hold: true, onDone: () => done++ }); cam.update(0.1); cam.snap();
+  near(cam.x, 500); near(cam.y, 500); near(cam.zoom, 2); assert.ok(cam.held && !cam.moving); assert.strictEqual(done, 1);   // snap() finishes the move
+  cam.update(0.5); near(cam.zoom, 2); assert.strictEqual(done, 1);
+  cam.snap(); near(cam.x, 500);                                                    // held: snap() leaves it where the move put it
+  cam.release(); p.x = 300; cam.snap(); near(cam.x, 300); p.x = 400; run(cam, 3); near(cam.x, 400, 0.01);
+  cam.zoom = 1; cam.moveTo(0, 0, 2, { zoom: 3 }); cam.update(0.1); const z = cam.zoom; assert.ok(z > 1);
+  cam.follow(p); run(cam, 1); near(cam.zoom, z);                                   // follow() stops the move's zoom as well
+  cam.moveTo(0, 0, 2, { zoom: 3 }); cam.update(0.1); cam.zoomTo(1.5, 1, t => t); cam.release(); run(cam, 2); near(cam.zoom, 1.5);   // but not a zoom asked for since
+});
+
+test('Camera: lead switched off forgets the old position; zoom from 0 and a one-point group stay finite; framing fits a turned view', () => {
+  const p = { x: 0, y: 0 }, cam = new X.Camera(); cam.follow(p); cam.lead = 0.35; cam.leadLag = 0; cam.update(0.1);
+  cam.lead = 0; cam.update(0.1); p.x = 3000; cam.update(0.1); cam.lead = 0.35; cam.update(0.1); near(cam.x, 3000);
+  cam.zoom = 0; cam.zoomTo(2, 1, t => t); cam.update(0.5); near(cam.zoom, 1); cam.update(0.5); near(cam.zoom, 2);
+  const c = new X.Camera(); c.frame([{ x: 5, y: 5 }], { padding: 0, lag: 0, maxZoom: Infinity }); c.update(0.016); assert.ok(Number.isFinite(c.zoom) && c.zoom > 0);
+  const a = { x: 0, y: 0 }, b = { x: 2000, y: 0 }, t = new X.Camera(); t.angle = Math.PI / 2; t.frame([a, b], { padding: 0, lag: 0 }); t.update(0.016);
+  for (const o of [a, b]) { const s = t.toScreen(o.x, o.y); assert.ok(s.y > -1e-6 && s.y < 600 + 1e-6, `off screen at y ${s.y}`); }
+  t.angle = 0; t.offset = { x: 300, y: 0 }; t.update(0.016); assert.ok(t.toScreen(0, 0).x > -1e-6 && t.toScreen(2000, 0).x < 800 + 1e-6);
+});
