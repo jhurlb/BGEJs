@@ -191,6 +191,7 @@ declare const Scenes: {
   /** Replace the whole stack. */
   go(name: string, args?: any, transition?: BgeTransition): void;
   push(name: string, args?: any, transition?: BgeTransition): void;
+  /** The scene taken off, or undefined when it fades out (it comes off half-way through). */
   pop(transition?: BgeTransition): BgeScene | undefined;
   update(dt: number): void;
   render(c: BgeCtx): void;
@@ -621,7 +622,7 @@ declare class Tilemap {
   raycast(ox: number, oy: number, dx: number, dy: number, max?: number): number;
   sees(ax: number, ay: number, bx: number, by: number): boolean;
   /** The centres of the tiles to pass through, or null when there is no way. */
-  path(ax: number, ay: number, bx: number, by: number, o?: { diagonal?: boolean; max?: number; cost?(id: number, cx: number, cy: number): number }): BgePoint[] | null;
+  path(ax: number, ay: number, bx: number, by: number, o?: { diagonal?: boolean; max?: number; /** How many times dearer than plain ground: 1 or more, Infinity = never. */ cost?(id: number, cx: number, cy: number): number }): BgePoint[] | null;
   /** From rows of characters. legend: { '#': 1 }. Other characters land in map.marks. */
   static from(lines: string[], tile?: number, legend?: Record<string, number>, o?: { x?: number; y?: number; layer?: string }): Tilemap;
   /** From a map exported by Tiled as JSON. */

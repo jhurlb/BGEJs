@@ -50,6 +50,7 @@
      map.path(ax, ay, bx, by, { diagonal: true, max: 5000, cost(id, cx, cy) })   // the shortest way round the walls (A*): the
                                                // centre of each tile to pass through, [{ x, y }, ...], or null when there is none.
                                                // cost returns how many times dearer a tile is to cross (mud: 3), Infinity = never.
+                                               // Plain ground is 1 and nothing is cheaper: a cost under 1 counts as 1.
                                                // max caps the tiles looked at, so a far goal can't stall a frame
    ================================================================ */
 class Tilemap {
@@ -171,7 +172,7 @@ class Tilemap {
     const T = this.tile, cols = this.cols, D = this._L(this.collide).data, out = this.bodies;
     const make = (id, b) => { const d = this.defs[id]; out.push(world.add(Object.assign(b, { fixed: true, tile: id }, opts, d && d.body))); return b; };
     // 1 = a plain block, 2 = one-way, 3 = a polygon, 0 = nothing to hit
-    const kind = id => { if (!id) return 0; const d = this.defs[id]; return !d ? 1 : d.pts ? 3 : d.oneWay ? 2 : d.solid === false ? 0 : 1; };
+    const kind = id => { if (!id) return 0; const d = this.defs[id]; return !d ? 1 : d.solid === false ? 0 : d.pts ? 3 : d.oneWay ? 2 : 1; };
     const loose = id => { const d = this.defs[id]; return !(d && d.body); }, same = (a, b) => a === b || (loose(a) && loose(b));   // tiles with a body of their own only join their own kind
     let open = new Map();   // the boxes that ended on the row above, by the columns they span: a run that matches one grows it
     for (let j = 0; j < this.rows; j++) {
@@ -226,7 +227,7 @@ class Tilemap {
     if (sx < 0 || sy < 0 || sx >= cols || sy >= rows || gx < 0 || gy < 0 || gx >= cols || gy >= rows) return null;
     const cost = o.cost || null, diag = o.diagonal !== false, max = o.max ?? 5000, goal = gy * cols + gx, start = sy * cols + sx;
     // What it costs to step onto a tile: 0 = can't.
-    const price = i => { const id = D[i]; if (this.solid(id)) return 0; if (!cost) return 1; const k = cost(id, i % cols, (i / cols) | 0); return k > 0 && k < Infinity ? k : 0; };
+    const price = i => { const id = D[i]; if (this.solid(id)) return 0; if (!cost) return 1; const k = cost(id, i % cols, (i / cols) | 0); return k > 0 && k < Infinity ? Math.max(1, k) : 0; };   // never under 1, or the estimate of what is left would be too high and the path not the shortest
     if (start === goal) return [];
     if (!price(goal)) return null;
     if (!this._g || this._g.length !== n) { this._g = new Float32Array(n); this._from = new Int32Array(n); this._st = new Uint32Array(n); this._stamp = 0; }
@@ -272,12 +273,13 @@ class Tilemap {
     } });
     return m;
   }
-  // A map exported from Tiled as JSON (orthogonal, layer data as CSV or uncompressed base64). o: { tile, x, y, collide: 'layer name' }.
+  // A map exported from Tiled as JSON (orthogonal, square tiles, layer data as CSV or uncompressed base64). o: { tile, x, y, collide: 'layer name' }.
   // Tile layers keep their names, visibility and opacity; object layers land in map.objects[name]; custom tile properties
   // (solid, oneWay...) and tile animations become defs. Flipped and rotated tiles are drawn unflipped.
   static tiled(j, o = {}){
     if (j.infinite) throw new Error('Tilemap: infinite Tiled maps are not supported (untick "Infinite" in the map properties)');
     if (j.orientation && j.orientation !== 'orthogonal') throw new Error(`Tilemap: only orthogonal maps are supported, not "${j.orientation}"`);
+    if (j.tileheight && j.tileheight !== j.tilewidth) throw new Error(`Tilemap: tiles must be square, not ${j.tilewidth} x ${j.tileheight}`);
     const m = new Tilemap(j.width, j.height, o.tile || j.tilewidth, o), k = m.tile / j.tilewidth; m.layers.length = 0;
     const walk = list => { for (const L of list || []) {
       if (L.type === 'group') walk(L.layers);

@@ -85,6 +85,7 @@ test('Tilemap.addTo: walls become a few big bodies, platforms and slopes their o
   const k = Tilemap.from(['.==.', '=/#B', '####'], 10, { '#': 1, '=': 2, '/': 3, 'B': 4 }), w2 = new Physics();
   k.def(2, { oneWay: true, h: 0.3 }).def(3, { pts: [0, 1, 1, 0, 1, 1] }).def(4, { body: { bounce: 1 } });
   const got = k.addTo(w2).map(b => b.pts ? ['poly', b.x, b.y, ...b.pts] : [b.oneWay ? 'oneWay' : b.bounce ? 'bouncy' : 'box', b.x, b.y, b.w, b.h]);
+  k.def(5, { pts: [0, 1, 1, 0, 1, 1], solid: false }).set(0, 0, 5); assert.strictEqual(k.addTo(w2).length, 6); k.set(0, 0, 0);   // a tile that is not solid makes no body, whatever its shape
   eq(got, [['oneWay', 10, 0, 20, 3], ['oneWay', 0, 10, 10, 3], ['poly', 10, 10, 0, 10, 10, 0, 10, 10], ['box', 20, 10, 10, 10], ['bouncy', 30, 10, 10, 10], ['box', 0, 20, 40, 10]]);
 });
 
@@ -128,6 +129,7 @@ test('Tilemap.sees and path: round walls, never through a corner, dearer tiles a
   eq(ys(bog.path(5, 15, 45, 15)), [15, 15, 15, 15]);                                       // straight through the mud
   assert.ok(!ys(bog.path(5, 15, 45, 15, { cost })).slice(0, -1).includes(15));            // round it when mud is dear
   assert.strictEqual(bog.path(5, 15, 25, 15, { cost: id => id === 2 ? Infinity : 1 }), null);
+  eq(ys(bog.path(5, 15, 45, 15, { diagonal: false, cost: (id, cx, cy) => cy === 0 ? 0.1 : 1 })), [15, 15, 15, 15]);   // nothing is cheaper than plain ground: a cost under 1 is 1
   // every step of a long path is to a neighbour and never into a wall, and it is as short as breadth-first search says
   const big = new Tilemap(30, 30, 10); let s = 11; const rnd = () => (s = (s * 16807) % 2147483647) / 2147483647;
   for (let i = 0; i < 260; i++) big.set(1 + Math.floor(rnd() * 28), Math.floor(rnd() * 30), 1);
@@ -180,6 +182,7 @@ test('Tilemap.tiled: layers, flip flags, base64, objects, tile properties and an
   assert.strictEqual(Tilemap.tiled({ width: 2, height: 2, tilewidth: 8, layers: [] }).layers.length, 1);
   assert.throws(() => Tilemap.tiled({ ...j, infinite: true }), /infinite/);
   assert.throws(() => Tilemap.tiled({ ...j, orientation: 'isometric' }), /orthogonal/);
+  assert.throws(() => Tilemap.tiled({ ...j, tileheight: 8 }), /square, not 16 x 8/);
   assert.throws(() => Tilemap.tiled({ ...j, layers: [{ type: 'tilelayer', name: 'z', data: 'eJw=', encoding: 'base64', compression: 'zlib' }] }), /"z" is compressed \(zlib\)/);
 });
 
@@ -219,7 +222,15 @@ test('Txt rich text: colour tags, named colours, {{ for a brace; without rich th
   eq(texts(), [['Take ', 0, 6.25, '#aaa'], ['3 coins', 25, 6.25, '#fd5'], [' to ', 60, 6.25, '#aaa'], ['Bob', 80, 6.25, '#f00'], [' {ok}', 95, 6.25, '#aaa']]);
   calls.length = 0; Txt.draw(ctx, '{gold}x{/}', 0, 0, { size: 10 }); eq(texts().map(t => t[0]), ['{gold}x{/}']);
   const L = Txt.measure('{gold}aaaa bbbb{/} cccc', { size: 10, width: 50, rich: true });   // a colour carries over a wrap
-  eq(L.lines.map(l => l.runs.map(r => [r.text, r.color])), [[['aaaa bbbb', '#fd5']], [['cccc', null]]]); assert.strictEqual(L.chars, 13);
+  eq(L.lines.map(l => l.runs.map(r => [r.text, r.color])), [[['aaaa bbbb', 'gold']], [['cccc', null]]]); assert.strictEqual(L.chars, 13);
+  Txt.colors.gold = '#0f0'; calls.length = 0; Txt.draw(ctx, 'Take {gold}3 coins{/} to {#f00}Bob{} {{ok}', 0, 0, { size: 10, rich: true, color: '#aaa' }); assert.strictEqual(texts()[1][3], '#0f0');   // a changed name shows at once
+  // a word whose colour changes part-way wraps as one word
+  const lines = (s, width) => Txt.measure(s, { size: 10, width, rich: true }).lines.map(l => l.runs.map(r => r.text).join('|'));
+  eq(lines('ab {#f00}gold{/}en', 25), ['ab', 'gold|en']); eq(lines('ab c{#f00}gold{/}en x', 30), ['ab', 'c|gold|en', 'x']); eq(lines('{#f00}gold{/}en', 10), ['gold|en']);
+  eq(lines('{#f00}aa bb{/}cc dd', 25), ['aa', 'bb|cc', 'dd']);
+  // a gap of another colour at the end of a line is trimmed like any other
+  const T = Txt.measure('ab {#f00} {/}', { size: 10, rich: true }); eq([T.w, T.chars, T.lines[0].runs.length], [10, 2, 1]);
+  eq(Txt.measure('Hello {#f00} world{/}', { size: 10, rich: true, width: 30 }).lines.map(l => l.w), [25, 25]);
 });
 
 test('Txt reveal shows the first n characters with every word already in its place', () => {
@@ -286,9 +297,13 @@ test('Scenes transitions: the switch happens under the cover, the top scene wait
   // a second go while the cover is closing wins; one while it opens starts over
   Scenes.go('a', 'x', 1); Scenes.update(0.2); Scenes.go('c', 'y', 1); Scenes.update(0.3); eq(log.splice(0), ['b exit', 'c enter y']);
   Scenes.go('a', 'z', 0.4); Scenes.update(0.2); eq(log.splice(0), ['c exit', 'a enter z']); Scenes.update(0.2); assert.strictEqual(Scenes.busy, false);
+  // a plain go while the cover closes wins, and the fade is dropped; a fade asked for while the cover opens closes it again from where it is
+  log.length = 0; Scenes.go('b', 'p', 1); Scenes.update(0.2); Scenes.go('c', 'q'); eq(log.splice(0), ['a exit', 'c enter q']); assert.strictEqual(Scenes.busy, false); Scenes.update(1); assert.strictEqual(Scenes.current, 'c');
+  Scenes.go('a', 'r', 1); Scenes.update(0.7); near(cover()[0], 0.6); Scenes.go('b', 's', 2); near(cover()[0], 0.6); Scenes.update(0.4); eq(log.filter(l => /enter/.test(l)), ['a enter r', 'b enter s']);
+  Scenes.go('a', 'z', 0.4); Scenes.update(0.2); Scenes.update(0.2); Scenes.update(0.2); log.length = 0; Scenes.go('c', 'y');
   // a typo throws at once, before anything fades
   assert.throws(() => Scenes.go('nope', null, 1), /unknown scene "nope"/); assert.strictEqual(Scenes.busy, false);
   // a scene that leaves from inside the switch (enter() calling go) is not cut short
   Scenes.add('hop', { enter(){ Scenes.go('b', 'hopped', 0.2); } }); Scenes.go('hop', null, 0.2); Scenes.update(0.1); assert.strictEqual(Scenes.current, 'hop'); assert.strictEqual(Scenes.busy, true);
-  Scenes.update(0.1); assert.strictEqual(Scenes.busy, true); Scenes.update(0.1); assert.strictEqual(Scenes.current, 'b'); Scenes.update(0.2); assert.strictEqual(Scenes.busy, false);
+  Scenes.update(0.05); assert.strictEqual(Scenes.current, 'b'); assert.strictEqual(Scenes.busy, true); Scenes.update(0.2); assert.strictEqual(Scenes.busy, false);   // already covered, so the second switch needs no second closing
 });

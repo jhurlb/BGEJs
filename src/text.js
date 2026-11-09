@@ -23,7 +23,9 @@
      Txt.style('title', { size: 48, weight: 800, outline: '#000', align: 'center' });
      Txt.draw(ctx, 'GAME OVER', vw / 2, 80, 'title');   Txt.draw(ctx, 'paused', x, y, { style: 'title', size: 24 });
    Txt.measure(str, opts) gives { w, h, chars, lines } without drawing. Layouts are remembered (the last Txt.max
-   different ones), so drawing the same text every frame measures it once. draw() leaves the context's font set.
+   different ones), so drawing the same text every frame measures it once. draw() leaves the context's font, textAlign
+   ('left'), textBaseline ('middle') and fill style as it used them, and after an outline its stroke style, lineWidth and
+   lineJoin too: set your own again before a fillText of your own.
 
    BITMAP FONTS, for pixel art: glyphs in a grid image, in the order of a string.
      const font = Txt.bitmap(Assets.get('font'), 8, 8, ' !"#$%&\'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ');
@@ -54,27 +56,37 @@ const Txt = {
     if (L) { M.delete(key); M.set(key, L); return L; }
     if (!bm) c.font = css;
     const meas = t => bm ? bm.measure(t, size) : c.measureText(t).width, max = o.width > 0 ? o.width : Infinity;
-    const lines = []; let line = { runs: [], w: 0 }, color = null, chars = 0, wide = 0, soft = false;
+    const lines = []; let line = { runs: [], w: 0 }, color = null, chars = 0, wide = 0, soft = false, glued = false, word = null;
     const endLine = () => {
-      const R = line.runs; if (R.length) { const last = R[R.length - 1]; last.text = last.text.replace(/[^\S\n]+$/, ''); if (!last.text && R.length > 1) R.pop(); }
+      const R = line.runs;
+      while (R.length) { const last = R[R.length - 1]; last.text = last.text.replace(/[^\S\n]+$/, ''); if (!last.text && R.length > 1) R.pop(); else break; }   // no gap at the end, whatever its colour
       let x = 0; for (const r of R) { r.x = x; r.w = meas(r.text); x += r.w; chars += r.text.length; }
       line.w = x; if (x > wide) wide = x; lines.push(line); line = { runs: [], w: 0 };
     };
     const add = (t, col) => { const R = line.runs, last = R[R.length - 1]; if (last && last.color === col) last.text += t; else R.push({ text: t, color: col, x: 0, w: 0 }); };
     const put = (text, col) => {   // words and the gaps between them, wrapping before a word that would not fit
       for (const tok of text.match(/\n|[^\S\n]+|[^\s]+/g) || []) {
-        if (tok === '\n') { endLine(); soft = false; continue; }
+        if (tok === '\n') { endLine(); soft = glued = false; continue; }
         const w = meas(tok), gap = tok.trim() === '';
         if (gap && !line.runs.length && soft) continue;   // no gap at the start of a wrapped line
-        if (!gap && line.w + w > max && line.runs.length) { endLine(); soft = true; }
-        add(tok, col); line.w += w;
+        if (!gap && line.w + w > max && line.runs.length && !(glued && word.w0 === 0)) {   // (a word too long for a line stays whole, on its own line)
+          if (glued) {   // the rest of a word whose colour changed part-way: the whole word goes to the next line
+            const R = line.runs, r = R[word.ri], moved = R.splice(word.ri + 1), tail = r.text.slice(word.off), carry = line.w - word.w0;
+            r.text = r.text.slice(0, word.off); if (tail) moved.unshift({ text: tail, color: r.color, x: 0, w: 0 });
+            if (!r.text && R.length > 1) R.pop();
+            endLine(); line.runs = moved; line.w = carry;
+          } else endLine();
+          soft = true; word = { ri: 0, off: 0, w0: 0 };
+        }
+        if (!gap && !glued) { const R = line.runs, last = R[R.length - 1], join = last && last.color === col; word = { ri: join ? R.length - 1 : R.length, off: join ? last.text.length : 0, w0: line.w }; }
+        add(tok, col); line.w += w; glued = !gap;
       }
     };
     if (o.rich) {
       let at = 0; const re = /\{\{|\{([^{}\n]*)\}/g; let m;
       while ((m = re.exec(s))) {
         if (m.index > at) put(s.slice(at, m.index), color);
-        if (m[0] === '{{') put('{', color); else color = m[1] === '/' || m[1] === '' ? null : this.colors[m[1]] || m[1];
+        if (m[0] === '{{') put('{', color); else color = m[1] === '/' || m[1] === '' ? null : m[1];   // a name is looked up when it is drawn, so changing Txt.colors shows at once
         at = re.lastIndex;
       }
       if (at < s.length) put(s.slice(at), color);
@@ -108,7 +120,7 @@ const Txt = {
       for (const r of ln.runs) {
         if (n <= 0) break;
         const t = n >= r.text.length ? r.text : r.text.slice(0, n); n -= r.text.length;
-        const col = mode === 1 ? o.shadow : r.color || o.color;
+        const col = mode === 1 ? o.shadow : r.color ? this.colors[r.color] || r.color : o.color;
         if (bm) bm.draw(c, t, lx + r.x, ly, size, col);
         else if (mode === 2) c.strokeText(t, lx + r.x, ly);
         else { c.fillStyle = col || '#fff'; c.fillText(t, lx + r.x, ly); }

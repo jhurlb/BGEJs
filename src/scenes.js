@@ -14,7 +14,8 @@
      Scenes.pop({ fade: 0.6, draw(c, k){ ... } });            // your own cover: k goes 0 -> 1 (covered, the switch happens) -> 0
    It is driven by Scenes.update(dt) and drawn by Scenes.render(ctx), over every scene. The scene on top is not updated
    while the cover closes, so nothing is pressed twice (freeze: false keeps it running). Scenes.busy is true meanwhile.
-   A second go / push / pop with a transition while the cover is still closing replaces the first.
+   A second go / push / pop while the cover is still closing replaces the first: one with a transition takes over its
+   fade, one without switches at once and ends it. One asked for while the cover opens closes it again from where it is.
    ================================================================ */
 const Scenes = {
   defs: new Map(), stack: [], fade: null,
@@ -22,16 +23,18 @@ const Scenes = {
   get current(){ const s = this.stack[this.stack.length - 1]; return s ? s.name : null; },
   _get(name){ const d = this.defs.get(name); if (!d) throw new Error(`Scenes: unknown scene "${name}"`); return d; },
   // The name is checked first, so a typo throws before any scene has been exited or paused.
-  go(name, args, tr){ const d = this._get(name); if (tr) return this._via(tr, () => this.go(name, args)); while (this.stack.length) this.stack.pop().exit?.(); this.stack.push(d); d.enter?.(args); },
-  push(name, args, tr){ const d = this._get(name); if (tr) return this._via(tr, () => this.push(name, args)); this.stack[this.stack.length - 1]?.pause?.(); this.stack.push(d); d.enter?.(args); },
-  pop(tr){ if (tr) return this._via(tr, () => this.pop()); const d = this.stack.pop(); d?.exit?.(); this.stack[this.stack.length - 1]?.resume?.(); return d; },
+  go(name, args, tr){ const d = this._get(name); if (tr) return this._via(tr, () => this.go(name, args)); this._now(); while (this.stack.length) this.stack.pop().exit?.(); this.stack.push(d); d.enter?.(args); },
+  push(name, args, tr){ const d = this._get(name); if (tr) return this._via(tr, () => this.push(name, args)); this._now(); this.stack[this.stack.length - 1]?.pause?.(); this.stack.push(d); d.enter?.(args); },
+  pop(tr){ if (tr) return this._via(tr, () => this.pop()); this._now(); const d = this.stack.pop(); d?.exit?.(); this.stack[this.stack.length - 1]?.resume?.(); return d; },
   get busy(){ return !!this.fade; },
   _via(o, act){
     if (typeof o === 'number') o = { fade: o };
     const f = this.fade;
     if (f && f.act) { f.act = act; return; }   // still closing: switch to the newer place instead
-    this.fade = { t: 0, dur: Math.max(1e-6, o.fade ?? 0.4), color: o.color || '#000', draw: o.draw || null, freeze: o.freeze !== false, act };
+    const dur = Math.max(1e-6, o.fade ?? 0.4), k = f ? clamp(1 - Math.abs(1 - 2 * f.t / f.dur), 0, 1) : 0;   // opening: close again from as covered as it is now
+    this.fade = { t: k * dur / 2, dur, color: o.color || '#000', draw: o.draw || null, freeze: o.freeze !== false, act };
   },
+  _now(){ if (this.fade && this.fade.act) this.fade = null; },   // a switch with no transition, asked for while a fade waits to switch: it wins, and the fade is dropped
   update(dt){
     const f = this.fade;
     if (f) {
