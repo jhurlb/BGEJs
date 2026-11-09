@@ -26,7 +26,7 @@ See [`examples/orb-sweep`](examples/orb-sweep) for a complete game in about 150 
 | `collide.js` | `Collide` | Circles, boxes, segments, rays, polygons, overlap separation, pushing a circle out of a wall, bouncing off it, keep-inside-box |
 | `spatial.js` | `SpatialHash` | Fast "what's near here": exact `within()` for things with a size, rough `query()`, and a `nearest()` whose cost doesn't grow with the search range |
 | `particles.js` | `Particles` | Pooled particles in typed arrays: kinds you draw or just describe (shape, size / opacity / colour over life), bursts, emitters that follow objects, named effects, draw layers, culling, blend modes |
-| `camera.js` | `Camera` | Follow with smoothing, zoom, world bounds, trauma shake and direct `kick()` jolts, screen and world conversion, view rect for culling |
+| `camera.js` | `Camera` | Follow with smoothing, a dead zone and look-ahead; frame a group; eased pans, zooms and room changes you can await; world bounds, rotation, parallax; trauma shake, smooth or rolling, and `kick()` jolts; screen and world conversion, view rect for culling |
 | `input.js` | `Input`, `keys` | Keyboard, pointer, mouse wheel, touch stick, gamepad, and named actions over all of them |
 | `ui-nav.js` | `UINav` | Gamepad and arrow-key navigation for DOM menus |
 | `audio.js` | `Sound` | Web Audio: synthesized effect recipes with rate limits, sampled sounds, drones |
@@ -86,6 +86,36 @@ fx.effect('pickup', [{ kind: 'ring', n: 1, speed: 0, size: 30, life: 0.3, jitter
 ```
 
 Shapes are `circle`, `square`, `rect`, `spark`, `ring`, or an `image` to stamp. Curves take evenly spaced stops, timed stops (`[[0, 1], [0.8, 1], [1, 0]]`) or a function of age. They are turned into lookup tables when the kind is made, so nothing is computed or allocated per particle. Bursts can start in a disc, a ring or a box and fly `outward`; emitters can pulse (`interval`, `count`), wait (`delay`), end themselves (`duration`, `onDone`) and pass on their own motion (`inherit`); a kind's `onDeath` hook chains effects (a rocket that bursts); `layer` lets smoke draw under the actors and sparks over them. The full list is in the comment at the top of `src/particles.js`.
+
+## Camera
+
+```js
+const cam = new Camera();
+cam.bounds = { x0: 0, y0: 0, x1: 4000, y1: 2000 };
+cam.follow(player, 0.001, {
+  deadzone: { w: 120, h: 80 },   // the player moves freely in this box before the camera does
+  lookAhead: 0.35,               // show more of where the player is heading
+  offset: { x: 0, y: -60 },
+}).snap();                       // start there, no glide
+
+cam.frame([p1, p2, boss], 0.01, { margin: 100, minZoom: 0.4 });   // keep a whole group on screen, zooming as they spread
+
+await cam.moveTo(door.x, door.y, 0.8, 'inOutCubic');               // a cutscene: pan, zoom in, hand back to the player
+await cam.zoomTo(1.6, 0.4);
+cam.zoomTo(1, 0.6); cam.follow(player, 0.001, { blend: 0.6 });
+
+cam.setBounds(nextRoom, 0.5);                                      // slide into the next room
+if (Input.wheel) cam.zoomAt(cam.zoom * (Input.wheel < 0 ? 1.1 : 0.9), Input.pointer.x, Input.pointer.y);   // zoom on the cursor
+
+cam.shakeFreq = 30; cam.shakeRot = 0.03;                           // a smooth shake that also rolls
+cam.addTrauma(0.6); cam.kick(10, hitAngle);                        // shake, plus a shove away from the hit
+
+cam.apply(ctx, 0.3); drawMountains(cam.layerView(0.3));            // parallax: a far layer at 0.3 x the camera's movement
+cam.apply(ctx);      drawWorld(cam.view);
+cam.applyScreen(ctx); drawHud();
+```
+
+A follow can be told where the velocity for look-ahead lives (`vel: world.get(id, 'Vel')`); otherwise it uses the target's `vx / vy`, or measures how the target moves. `moveTo`, `zoomTo`, `zoomAt`, `fit` and `setBounds` take seconds and an ease (a function or a name from `Ease`) and return a handle that can be cancelled or awaited. `cam.rot` turns the view, and `toWorld`, `toScreen`, `view` and the bounds all allow for it. The full list is in the comment at the top of `src/camera.js`.
 
 ## Rules the engine follows
 

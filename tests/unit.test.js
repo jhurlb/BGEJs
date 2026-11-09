@@ -311,6 +311,136 @@ test('Camera: the view rect grows by the shake so culling never shows a gap', ()
   near(cam.view.x1 - cam.view.x0, w0 + 2 * 10 / cam.k); assert.ok(Math.abs(cam.ox) <= 10 && Math.abs(cam.oy) <= 10);
 });
 
+// ---- 0.5.0 camera
+
+test('Camera: a dead zone holds the view until the target reaches its edge', () => {
+  const p = { x: 0, y: 0 }, cam = new X.Camera().follow(p, 0, { deadzone: { w: 100, h: 40 } });
+  p.x = 30; p.y = -15; cam.update(0.016); near(cam.x, 0); near(cam.y, 0);          // inside the box: nothing moves
+  p.x = 80; p.y = 50; cam.update(0.016); near(cam.x, 30); near(cam.y, 30);          // pushed by the right and bottom edges
+  p.x = 60; cam.update(0.016); near(cam.x, 30);                                     // back inside: the view stays put
+  p.x = -40; cam.update(0.016); near(cam.x, 10);                                    // the left edge now
+  cam.follow(p, 0, { deadzone: 20 }); eq(cam.deadzone, { w: 20, h: 20 });           // a number is a square
+  cam.follow(p, 0.5); eq(cam.deadzone, { w: 20, h: 20 });                           // left out: kept
+  cam.x = 500; cam.snap(); near(cam.x, -40); eq(cam.deadzone, { w: 20, h: 20 });    // snap() centres whatever the box
+  cam.follow(p, 0, { deadzone: null }); assert.strictEqual(cam.deadzone, null);
+});
+
+test('Camera: look-ahead leads by the velocity, is capped, and can measure the velocity itself', () => {
+  const p = { x: 0, y: 0, vx: 200, vy: 0 }, cam = new X.Camera().follow(p, 0, { lookAhead: 0.5, lookLag: 0 });
+  cam.update(0.016); near(cam.x, 100);
+  p.vx = 0; p.vy = -9000; cam.update(0.016); near(cam.x, 0); near(cam.y, -cam.lookMax);   // capped at lookMax
+  const v = { x: -100, y: 0 }; cam.follow(p, 0, { vel: v }); cam.update(0.016); near(cam.x, -50); near(cam.y, 0);   // a separate velocity (an ECS Vel)
+  cam.follow(p, 0); assert.strictEqual(cam.lookVel, null);                          // vel is not kept for the next follow
+  const q = { x: 0, y: 0 }; cam.follow(q, 0); cam.update(0.1); near(cam.x, 0);      // no velocity anywhere: measured from movement
+  q.x = 10; cam.update(0.1); near(cam.x, 10 + 50);
+  cam.update(0); near(cam.x, 60);                                                   // an update with no time keeps the lead
+  cam.lookLag = 0.01; cam.update(0.1); assert.ok(cam.lx < 50 && cam.lx > 0);          // it stopped: the lead eases back rather than cutting
+  for (let i = 0; i < 100; i++) { q.x += 10; cam.update(0.1); } near(cam.lx, 50, 1e-3);   // the smoothed lead settles on the same place
+  cam.follow(q, 0, { lookAhead: 0, offset: { x: 0, y: -60 } }); cam.update(0.016); near(cam.x, q.x); near(cam.y, -60);
+});
+
+test('Camera: follow with blend glides to the new target and keeps tracking it on the way', () => {
+  const a = { x: 0, y: 0 }, b = { x: 1000, y: 0 }, cam = new X.Camera().follow(a); cam.update(0.016);
+  cam.follow(b, 0, { blend: 1, ease: 'linear' }); near(cam.x, 0);
+  cam.update(0.25); near(cam.x, 250); cam.update(0.25); near(cam.x, 500);
+  b.x = 2000; cam.update(0.25); near(cam.x, 1500);                                  // three quarters of the way to where it is now
+  cam.update(0.25); near(cam.x, 2000); b.x = 2100; cam.update(0.016); near(cam.x, 2100);
+  cam.follow(a, 0, { blend: 1 }); cam.update(0.5); near(cam.x, 1050); cam.follow(a); near(cam.x, 0);   // smoothstep by default; a plain follow cuts
+});
+
+test('Camera: moveTo, zoomTo and fit ease over time and their handles resolve once', async () => {
+  const cam = new X.Camera().follow({ x: 5, y: 5 }); let done = 0;
+  const h = cam.moveTo(100, 200, 2, t => t).then(() => done++);
+  assert.strictEqual(cam.target, null);
+  cam.update(1); near(cam.x, 52.5); near(cam.y, 102.5); assert.strictEqual(done, 0);
+  cam.update(1); near(cam.x, 100); near(cam.y, 200); assert.strictEqual(done, 1);
+  cam.update(1); assert.strictEqual(done, 1); h.then(() => done++); assert.strictEqual(done, 2);   // then() after the end still runs
+  let never = 0; cam.moveTo(0, 0, 1).then(() => never++); cam.moveTo(50, 50, 1).then(() => done++);   // replaced: never resolves
+  cam.update(2); assert.strictEqual(never, 0); assert.strictEqual(done, 3); near(cam.x, 50);
+  const c = cam.moveTo(0, 0, 1); cam.update(0.5); const mid = cam.x; c.cancel(); cam.update(1); near(cam.x, mid); assert.ok(mid > 0 && mid < 50);   // cancel stops it where it is
+  cam.moveTo(7, 8); near(cam.x, 7); near(cam.y, 8);                                 // no time: at once
+  const z = cam.zoomTo(4, 1, 'linear'); cam.update(0.5); near(cam.zoom, 2);         // by ratio: halfway from 1 to 4 is 2
+  cam.update(0.5); assert.strictEqual(cam.zoom, 4); await z;
+  cam.zoomTo(1000); assert.strictEqual(cam.zoom, cam.zoomMax); cam.zoomTo(0); assert.strictEqual(cam.zoom, cam.zoomMin);
+  await cam.fit({ x0: 0, y0: 0, x1: 400, y1: 100 }, 0, null, 50); near(cam.x, 200); near(cam.y, 50); cam.update(0);
+  near(cam.view.x0, -50); near(cam.view.x1, 450); assert.ok(cam.view.y0 < -50 && cam.view.y1 > 150);   // the rect plus its margin fills the width
+  setTimeout(() => cam.update(1), 0); await cam.fit({ x0: 0, y0: 0, x1: 800, y1: 600 }, 0.5); near(cam.k, 1); near(cam.x, 400);
+});
+
+test('Camera: zoomAt keeps the world point under the cursor still', () => {
+  const cam = new X.Camera(); cam.x = 300; cam.y = 100; cam.update(0);
+  const w0 = cam.toWorld(650, 120); cam.zoomAt(2.5, 650, 120);
+  let w = cam.toWorld(650, 120); near(w.x, w0.x); near(w.y, w0.y); assert.strictEqual(cam.zoom, 2.5);
+  cam.rot = 0.7; const w1 = cam.toWorld(100, 500); cam.zoomAt(0.5, 100, 500, 1);
+  for (let i = 0; i < 4; i++) { cam.update(0.25); w = cam.toWorld(100, 500); near(w.x, w1.x); near(w.y, w1.y); }
+  near(cam.zoom, 0.5);
+});
+
+test('Camera: setBounds slides into the new room, and a pan never leaves bounds it started in', () => {
+  const p = { x: 300, y: 300 }, cam = new X.Camera(); cam.zoom = 1 / cam.k;   // 1 world unit = 1 pixel: the view is 800 x 600
+  cam.bounds = { x0: 0, y0: 0, x1: 1000, y1: 600 }; cam.follow(p); cam.update(0.016); near(cam.x, 400); near(cam.y, 300);
+  p.x = 1100; let done = false; cam.setBounds({ x0: 1000, y0: 0, x1: 2000, y1: 600 }, 1, 'linear').then(() => { done = true; });
+  cam.update(0.5); near(cam.x, 900); assert.ok(!done);                              // halfway from 400 to 1400
+  cam.update(0.5); near(cam.x, 1400); assert.ok(done);
+  cam.setBounds({ x0: 0, y0: 0, x1: 2000, y1: 600 }); cam.moveTo(-500, 300, 1); cam.update(0.5); assert.ok(cam.x >= 400);
+  cam.update(0.5); near(cam.x, 400);
+});
+
+test('Camera: frame() centres on a group and zooms to fit it', () => {
+  const a = { x: 0, y: 0 }, b = { x: 1000, y: 0 }, list = [a, b], cam = new X.Camera().frame(list, 0, { margin: 100, minZoom: 0.1, maxZoom: 2 });
+  cam.update(0.016); near(cam.x, 500); near(cam.y, 0); near(cam.view.x0, -100); near(cam.view.x1, 1100);
+  b.y = 4000; cam.update(0.016); near(cam.y, 2000); near(cam.view.y0, -100); near(cam.view.y1, 4100);   // tall now: fitted by height
+  b.x = 10; b.y = 0; cam.update(0.016); near(cam.zoom, 2);                          // close together: no closer than maxZoom
+  b.x = 1e6; cam.update(0.016); near(cam.zoom, 0.1);                                // and no farther than minZoom
+  list.length = 1; a.r = 300; cam.frameMargin = 0; cam.update(0.016); near(cam.x, 0); near(cam.view.y0, -300); near(cam.view.y1, 300);   // a radius counts
+  list.length = 0; cam.update(0.016); near(cam.x, 0); near(cam.view.y0, -300);      // empty: holds
+  list.push(a, b); b.x = 1000; a.r = 0; cam.bounds = { x0: -200, y0: -150, x1: 1200, y1: 900 };
+  b.x = 1e6; cam.update(0.016); near(cam.view.x0, -200); near(cam.view.x1, 1200);   // never zooms out past the world
+  cam.bounds = null; b.x = 1000; cam.frame(list, 0.001, { margin: 0 }); cam.zoom = 2; cam.x = 0;
+  cam.update(0.1); assert.ok(cam.x > 0 && cam.x < 500 && cam.zoom < 2 && cam.zoom > 800 / 1000 / cam.k * cam.zoom);             // with a lag both the move and the zoom are smooth
+  for (let i = 0; i < 200; i++) cam.update(0.1); near(cam.x, 500, 1e-3); near(cam.view.x1, 1000, 1e-2);
+  cam.follow(a); assert.strictEqual(cam.targets, null); cam.frame(list); assert.strictEqual(cam.target, null);
+  cam.rot = Math.PI / 2; cam.frameMargin = 0; cam.frameMin = 0.01; a.x = 0; b.x = 0; b.y = 1200; cam.update(0.016);
+  near(cam.y, 600); near(cam.k, 800 / 1200);                                        // turned a quarter: the screen's width runs along world y
+});
+
+test('Camera: rotation turns apply(), toWorld / toScreen and the view box together', () => {
+  const cam = new X.Camera(); cam.x = 50; cam.y = -20; cam.zoom = 1.5; cam.rot = 0.6; cam.update(0);
+  const s = cam.toScreen(123, 45), w = cam.toWorld(s.x, s.y); near(w.x, 123); near(w.y, 45);
+  const c = cam.toScreen(50, -20); near(c.x, 400); near(c.y, 300);
+  let m; cam.apply({ setTransform: (...a) => { m = a; } });
+  near(m[0] * 123 + m[2] * 45 + m[4], s.x); near(m[1] * 123 + m[3] * 45 + m[5], s.y);   // the canvas puts the point where toScreen says
+  for (const [sx, sy] of [[0, 0], [800, 0], [0, 600], [800, 600]]) { const q = cam.toWorld(sx, sy); assert.ok(cam.inView(q.x, q.y, 1e-6), 'every screen corner is inside the view box'); }
+  cam.rot = Math.PI / 2; cam.update(0); near(cam.view.x1 - cam.view.x0, 600 / cam.k); near(cam.view.y1 - cam.view.y0, 800 / cam.k);
+  const out = { z: 1 }; assert.strictEqual(cam.toWorld(1, 2, out), out); assert.strictEqual(cam.toScreen(1, 2, out), out);   // fills the object you pass
+  cam.rot = 0; cam.zoom = 1; cam.update(0); cam.apply({ setTransform: (...a) => { m = a; } });
+  eq(m, [cam.k, 0, 0, cam.k, 400 - 50 * cam.k, 300 + 20 * cam.k]);
+});
+
+test('Camera: smooth shake depends on time not frame rate, a directed kick settles back, and the view covers both', () => {
+  const run = fps => { const cam = new X.Camera(); cam.shakeFreq = 20; cam.shakeDecay = 0; cam.shakeRot = 0.1; cam.addTrauma(1); for (let i = 0; i < fps; i++) cam.update(1 / fps); return cam; };
+  const a = run(60), b = run(240); near(a.ox, b.ox, 1e-6); near(a.oy, b.oy, 1e-6); near(a.orot, b.orot, 1e-6);
+  const cam = new X.Camera(); cam.shakeFreq = 20; cam.shakeDecay = 0; cam.shakeRot = 0.1; cam.addTrauma(1);
+  let big = 0, step = 0, turn = 0; for (let i = 0; i < 600; i++) { const px = cam.ox; cam.update(1 / 120); big = Math.max(big, Math.abs(cam.ox), Math.abs(cam.oy)); step = Math.max(step, Math.abs(cam.ox - px)); turn = Math.max(turn, Math.abs(cam.orot)); }
+  assert.ok(big <= cam.shakeMax && big > cam.shakeMax * 0.5, 'within shakeMax and using most of it: ' + big);
+  assert.ok(step < cam.shakeMax * 0.6, 'neighbouring frames are close: ' + step); assert.ok(turn <= 0.1 && turn > 0.02);
+  const still = new X.Camera(); still.shakeFreq = 20; still.update(0.016); assert.strictEqual(still.ox, 0); assert.strictEqual(still.orot, 0);
+  const old = new X.Camera(); old.shakeRot = 0.1; old.addTrauma(1); old.update(0); assert.ok(old.orot !== 0 && Math.abs(old.orot) <= 0.1);   // rolls without shakeFreq too
+  const k = new X.Camera(); k.update(0); const w0 = k.view.x1 - k.view.x0;
+  k.kick(10, 0); k.update(0); near(k.ox, -10); near(k.oy, 0); near(k.view.x1 - k.view.x0, w0 + 20 / k.k);   // the camera goes right, so the picture goes left
+  k.kick(10, Math.PI / 2); k.update(0); near(k.ox, -10); near(k.oy, -10);
+  k.kick(100, 0); k.update(0); near(Math.hypot(k.ox, k.oy), k.kickMax);              // shoves add up to kickMax
+  k.update(0.25); near(Math.hypot(k.ox, k.oy), k.kickMax * Math.exp(-2)); k.update(5); assert.strictEqual(k.ox, 0); assert.strictEqual(k.jx, 0);
+});
+
+test('Camera: parallax layers and pixel snapping', () => {
+  const cam = new X.Camera(); cam.x = 1000.3; cam.y = 400.7; cam.update(0); let m; const c = { setTransform: (...a) => { m = a; } };
+  cam.apply(c, 0.5); near(m[4], 400 - 500.15 * cam.k); near(m[5], 300 - 200.35 * cam.k);
+  cam.apply(c, 0); eq(m, [cam.k, 0, 0, cam.k, 400, 300]);
+  const r = cam.layerView(0.5); near((r.x0 + r.x1) / 2, 500.15); near(r.x1 - r.x0, cam.view.x1 - cam.view.x0); near((r.y0 + r.y1) / 2, 200.35);
+  cam.pixelSnap = true; cam.apply(c); assert.ok(Number.isInteger(m[4]) && Number.isInteger(m[5])); near(m[4], 400 - 1000.3 * cam.k, 0.51);
+});
+
 // Loop and Input in their own fake page each, so tests don't share key state.
 const page = () => load(['core', 'loop', 'input', 'sprites'].map(f => `src/${f}.js`), ['Loop', 'Input', 'keys', 'Sprites']);
 const frames = (L, n, ms, t0 = 0) => { for (let i = 1; i <= n; i++) L._tick(t0 + i * ms); return t0 + n * ms; };

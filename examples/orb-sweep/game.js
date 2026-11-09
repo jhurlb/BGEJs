@@ -8,7 +8,7 @@ VIEW.ref = 700; resize();
 const save = new Store('orbsweep');
 const W = 1600, H = 1600, BOUNDS = { x: 0, y: 0, w: W, h: H };
 const fx = Particles.basic(new Particles(3000));
-const cam = new Camera(); cam.bounds = { x0: 0, y0: 0, x1: W, y1: H }; cam.shakeMax = 12;
+const cam = new Camera(); cam.bounds = { x0: 0, y0: 0, x1: W, y1: H }; cam.shakeMax = 12; cam.shakeFreq = 28; cam.shakeRot = 0.02;
 const hash = new SpatialHash(80);
 const clock = new Clock();
 let world, ship, score, lives, pulseCd, best = save.get('best', 0), level, trail;
@@ -56,7 +56,7 @@ function pulse(){
   for (const o of hash.within(ship.x, ship.y, R, [])) popOrb(o);   // its own array: popOrb spawns, and the shared one may be reused
 }
 Events.on('shipHit', o => {
-  lives--; ship.inv = 1.5; cam.addTrauma(0.8); Loop.hitstop(0.12); Sound.play('hurt');
+  lives--; ship.inv = 1.5; cam.addTrauma(0.8); cam.kick(12, Math.atan2(ship.y - o.y, ship.x - o.x));   // shake, and a shove away from the orb Loop.hitstop(0.12); Sound.play('hurt');
   fx.play('explosion', ship.x, ship.y, { scale: 0.8 });
   popOrb(o);
   if (lives <= 0) clock.after(0.6, () => Scenes.push('over'));
@@ -96,7 +96,7 @@ function newRun(){
   ship = { x: W / 2, y: H / 2, r: 12, vx: 0, vy: 0, ang: 0, inv: 1 };
   trail = fx.emitter('glow', { rate: 60, speed: [10, 40], life: 0.35, size: 4, color: ['#7cf', '#59f'] }).follow(ship);
   score = 0; lives = 3; pulseCd = 0; level = 1;
-  cam.follow(ship, 0.002); cam.x = ship.x; cam.y = ship.y;
+  cam.follow(ship, 0.002, { lookAhead: 0.3, lookMax: 110 }).snap();   // shows a little more of where the ship is heading
   for (let i = 0; i < 5; i++) spawnEdge();
 }
 function spawnEdge(){
