@@ -660,7 +660,8 @@ test('Camera: look-ahead leads by velocity, is capped, and uses measured speed w
   p.vx = 5000; cam.update(0.016); near(cam.x, cam.leadMax);
   cam.leadLag = 0.02; p.vx = -200; cam.update(0.016); assert.ok(cam.x < cam.leadMax && cam.x > -100);   // swings round, not a jump
   run(cam, 3); near(cam.x, -100, 0.01);
-  cam.update(0); near(cam.x, -100, 0.01);                                          // a zero-length update changes nothing
+  p.vx = 200; cam.update(0.016); const mid = cam.x; cam.update(0); assert.strictEqual(cam.x, mid);   // a zero-length update changes nothing, mid-swing
+  p.vx = -200; run(cam, 3);
   const q = { x: 0, y: 0 }, c2 = new X.Camera(); c2.follow(q); c2.lead = 0.5; c2.leadLag = 0;
   c2.update(0.1); near(c2.x, 0); q.y = 30; c2.update(0.1); near(c2.y, 30 + 300 * 0.5 > c2.leadMax ? 30 + c2.leadMax : 180);
   q.y = 30; c2.update(0.1); near(c2.y, 30);                                        // stopped: no lead
@@ -672,7 +673,7 @@ test('Camera.frame keeps a group in shot: centres on it and zooms to fit within 
   cam.frame(list, { padding: 50, lag: 0 }); cam.update(0.016);
   near(cam.x, 225); near(cam.y, 0); near(cam.zoom, 1);                             // fits at the default zoom, which is the cap
   b.x = 2000; cam.update(0.016); near(cam.x, 1025);
-  near(cam.zoom, 800 / (2050 + 100) / cam.k * cam.zoom);                           // 800 px across a 2,150 unit span
+  near(cam.zoom, 800 / (2050 + 100) / (cam.k / cam.zoom));                          // 800 px across a 2,150 unit span
   assert.ok(cam.view.x0 <= 0 && cam.view.x1 >= 2050);
   b.x = 1e6; cam.update(0.016); near(cam.zoom, 0.25);                              // minZoom
   list.pop(); cam.update(0.016); near(cam.x, 0); near(cam.zoom, 1);                // the list is live
@@ -726,4 +727,26 @@ test('Camera: directional kicks, roll, smooth shake and shakeScale', () => {
   assert.ok(c.view.x1 - c.view.x0 > w0 + 2 * 16 / c.k);                            // the roll widens the view rect too
   const t = []; c.apply({ setTransform: (...a) => t.push(a) }); assert.ok(t[0][1] !== 0);
   c.pixelSnap = true; c.x = 0.123; c.apply({ setTransform: (...a) => t.push(a) }); assert.strictEqual(t[1][4], Math.round(t[1][4]));
+});
+
+test('Camera: snap, follow and release during a move; a move takes its zoom with it', () => {
+  const p = { x: 0, y: 0 }, cam = new X.Camera(); let done = 0; cam.follow(p, 0.001);
+  cam.moveTo(500, 500, 2, { zoom: 2, hold: true, onDone: () => done++ }); cam.update(0.1); cam.snap();
+  near(cam.x, 500); near(cam.y, 500); near(cam.zoom, 2); assert.ok(cam.held && !cam.moving); assert.strictEqual(done, 1);   // snap() finishes the move
+  cam.update(0.5); near(cam.zoom, 2); assert.strictEqual(done, 1);
+  cam.snap(); near(cam.x, 500);                                                    // held: snap() leaves it where the move put it
+  cam.release(); p.x = 300; cam.snap(); near(cam.x, 300); p.x = 400; run(cam, 3); near(cam.x, 400, 0.01);
+  cam.zoom = 1; cam.moveTo(0, 0, 2, { zoom: 3 }); cam.update(0.1); const z = cam.zoom; assert.ok(z > 1);
+  cam.follow(p); run(cam, 1); near(cam.zoom, z);                                   // follow() stops the move's zoom as well
+  cam.moveTo(0, 0, 2, { zoom: 3 }); cam.update(0.1); cam.zoomTo(1.5, 1, t => t); cam.release(); run(cam, 2); near(cam.zoom, 1.5);   // but not a zoom asked for since
+});
+
+test('Camera: lead switched off forgets the old position; zoom from 0 and a one-point group stay finite; framing fits a turned view', () => {
+  const p = { x: 0, y: 0 }, cam = new X.Camera(); cam.follow(p); cam.lead = 0.35; cam.leadLag = 0; cam.update(0.1);
+  cam.lead = 0; cam.update(0.1); p.x = 3000; cam.update(0.1); cam.lead = 0.35; cam.update(0.1); near(cam.x, 3000);
+  cam.zoom = 0; cam.zoomTo(2, 1, t => t); cam.update(0.5); near(cam.zoom, 1); cam.update(0.5); near(cam.zoom, 2);
+  const c = new X.Camera(); c.frame([{ x: 5, y: 5 }], { padding: 0, lag: 0, maxZoom: Infinity }); c.update(0.016); assert.ok(Number.isFinite(c.zoom) && c.zoom > 0);
+  const a = { x: 0, y: 0 }, b = { x: 2000, y: 0 }, t = new X.Camera(); t.angle = Math.PI / 2; t.frame([a, b], { padding: 0, lag: 0 }); t.update(0.016);
+  for (const o of [a, b]) { const s = t.toScreen(o.x, o.y); assert.ok(s.y > -1e-6 && s.y < 600 + 1e-6, `off screen at y ${s.y}`); }
+  t.angle = 0; t.offset = { x: 300, y: 0 }; t.update(0.016); assert.ok(t.toScreen(0, 0).x > -1e-6 && t.toScreen(2000, 0).x < 800 + 1e-6);
 });

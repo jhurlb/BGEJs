@@ -988,13 +988,15 @@ Particles.basic = sys => {
      cam.offset = { x: 0, y: -40 };        // aim this far from the target, in world units
      cam.frame([p1, p2, boss], { padding: 80, minZoom: 0.25, maxZoom: 1, lag: 0.01 });   // keep several things in shot: centres on them and
                                            // zooms to fit (their r counts). The list is read every update, so add and remove freely. zoom: false only centres
-     cam.snap();                           // jump straight to where the camera is heading (after a teleport or a respawn)
+     cam.snap();                           // jump straight to where the camera is heading (after a teleport or a respawn). During a moveTo it finishes the move
+   A measured lead reads any jump of the aim point as speed, so call snap() after a teleport or after changing who is in a framed group.
 
    Zoom and scripted moves
      cam.zoomTo(2, 0.4, Ease.outCubic);    // zoom over 0.4 s (0 = now); following carries on meanwhile
      cam.zoomAt(cam.zoom * 1.1, mx, my);   // zoom now, keeping the world point under a screen point where it is (mouse wheel, pinch)
      cam.moveTo(x, y, 1.2, { ease, zoom: 1.5, hold: true, onDone });   // glide to a point; following waits until it arrives,
      cam.moving;  cam.held;  cam.release();                            // or with hold: true, until release(). follow() and frame() also cancel a move
+   Cancelling a move cancels its zoom too. A zoomTo or zoomAt replaces a zoom that is running, and the replaced one's onDone is not called.
 
    Shake
      cam.addTrauma(0.5);                   // trauma squared x shakeMax pixels, trauma falls by shakeDecay per second
@@ -1020,18 +1022,25 @@ class Camera {
     this._lx = 0; this._ly = 0; this._px = 0; this._py = 0; this._seen = false; this._kx = 0; this._ky = 0; this._n = [0, 0, 0, 0, 0, 0]; this._np = 1;
   }
   follow(t, lag = 0){
-    this.target = t; this.lag = lag; this.group = this._fit = this._mv = null; this.held = false; this._lead0();
+    this._stop(); this.target = t; this.lag = lag; this.group = this._fit = null; this._lead0();
     if (t && !lag) { this.x = t.x; this.y = t.y; }
     return this;
   }
   frame(list, o = {}){
-    this.group = list; this.target = this._mv = null; this.held = false; this.lag = o.lag ?? 0.01; this._lead0();
+    this._stop(); this.group = list; this.target = null; this.lag = o.lag ?? 0.01; this._lead0();
     this._fit = o.zoom === false ? null : { pad: o.padding ?? 80, min: o.minZoom ?? 0.25, max: o.maxZoom ?? 1, lag: o.zoomLag ?? this.lag };
     return this;
   }
   snap(){
-    this._mv = null; this._lead0();
-    if (this._aim()) { const o = this.offset; this.x = this._gx + (o ? o.x : 0); this.y = this._gy + (o ? o.y : 0); if (this._fit) { this.zoom = this._gz; this._zt = null; } }
+    const m = this._mv;
+    if (m) {   // heading for the end of a move: finish it
+      const zt = m.zt && this._zt === m.zt ? m.zt : null;
+      this.x = m.x1; this.y = m.y1; this._mv = null; this.held = m.hold; if (zt) { this.zoom = zt.z1; this._zt = null; }
+      if (m.onDone) m.onDone(this);
+      return this;
+    }
+    this._lead0();
+    if (!this.held && this._aim()) { const o = this.offset; this.x = this._gx + (o ? o.x : 0); this.y = this._gy + (o ? o.y : 0); if (this._fit) { this.zoom = this._gz; this._zt = null; } }
     return this;
   }
   zoomTo(z, secs = 0, ease = Camera.smooth, onDone = null){
@@ -1045,10 +1054,11 @@ class Camera {
   }
   moveTo(x, y, secs = 0.5, o = {}){
     this._mv = { x0: this.x, y0: this.y, x1: x, y1: y, t: 0, d: secs, ease: o.ease || Camera.smooth, hold: !!o.hold, onDone: o.onDone || null };
-    if (o.zoom != null) this.zoomTo(o.zoom, secs, this._mv.ease);
+    if (o.zoom != null) { this.zoomTo(o.zoom, secs, this._mv.ease); this._mv.zt = this._zt; }
     return this;
   }
-  release(){ this._mv = null; this.held = false; this._lead0(); return this; }
+  release(){ this._stop(); this._lead0(); return this; }
+  _stop(){ const m = this._mv; if (m && m.zt && this._zt === m.zt) this._zt = null; this._mv = null; this.held = false; }   // a move takes its zoom with it
   get moving(){ return !!this._mv; }
   addTrauma(a){ this.trauma = Math.min(1, this.trauma + a); }
   kick(a, angle){
@@ -1067,7 +1077,14 @@ class Camera {
     let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
     for (let i = 0; i < g.length; i++) { const o = g[i], r = o.r || 0; if (o.x - r < x0) x0 = o.x - r; if (o.x + r > x1) x1 = o.x + r; if (o.y - r < y0) y0 = o.y - r; if (o.y + r > y1) y1 = o.y + r; }
     this._gx = (x0 + x1) / 2; this._gy = (y0 + y1) / 2;
-    const f = this._fit; if (f) this._gz = clamp(Math.min(vw / (x1 - x0 + f.pad * 2), vh / (y1 - y0 + f.pad * 2)) / scale, f.min, f.max);
+    const f = this._fit;
+    if (f) {   // the room the group needs on screen: its box as a turned view sees it, plus the offset that pushes it off centre
+      const o = this.offset, w = x1 - x0, h = y1 - y0, co = Math.abs(Math.cos(this.angle)), si = Math.abs(Math.sin(this.angle));
+      const ox = o ? Math.abs(o.x) : 0, oy = o ? Math.abs(o.y) : 0;
+      const fw = w * co + h * si + (ox * co + oy * si + f.pad) * 2, fh = w * si + h * co + (ox * si + oy * co + f.pad) * 2;
+      const z = clamp(Math.min(fw > 0 ? vw / fw : Infinity, fh > 0 ? vh / fh : Infinity) / scale, f.min, f.max);
+      this._gz = z < Infinity ? z : this.zoom;   // a single point with no padding and no top limit: nothing to fit, so stay as it is
+    }
     return true;
   }
   update(dt){
@@ -1087,7 +1104,7 @@ class Camera {
         }
         if (dt > 0) { this._px = gx; this._py = gy; this._seen = true; }
         gx += this._lx; gy += this._ly;
-      } else if (this._lx || this._ly) this._lead0();
+      } else if (this._seen || this._lx || this._ly) this._lead0();
       const o = this.offset, z = this.deadzone;
       if (o) { gx += o.x; gy += o.y; }
       if (z) {   // only the part of the gap that sticks out of the box counts
@@ -1098,7 +1115,7 @@ class Camera {
       const f = this._fit; if (f && !zt) this.zoom = f.lag ? damp(this.zoom, this._gz, f.lag, dt) : this._gz;
     }
     if (zt) {   // zoom moves by ratio, so each moment of the zoom looks as fast as the last
-      zt.t = Math.min(1, zt.t + dt / zt.d); this.zoom = zt.z0 * Math.pow(zt.z1 / zt.z0, zt.ease(zt.t));
+      zt.t = Math.min(1, zt.t + dt / zt.d); const e = zt.ease(zt.t); this.zoom = zt.z0 > 0 && zt.z1 > 0 ? zt.z0 * Math.pow(zt.z1 / zt.z0, e) : lerp(zt.z0, zt.z1, e);
       if (zt.t >= 1 && this._zt === zt) this._zt = null;
     }
     // Half the view in world units; a turned view covers a wider upright box.

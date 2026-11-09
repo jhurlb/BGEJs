@@ -11,7 +11,7 @@ The camera. Everything that worked in 0.4 works the same: `follow`, `addTrauma`,
 - **Group framing.** `cam.frame([p1, p2, boss], { padding, minZoom, maxZoom, lag })` centres on several things and zooms to keep them all in shot (their `r` counts). The list is read every update. `zoom: false` only centres.
 - **Zoom.** `cam.zoomTo(z, seconds, ease)` eases by ratio, so the zoom looks as fast at the end as at the start. `cam.zoomAt(z, sx, sy)` zooms and keeps the world point under a screen point where it is, for a mouse wheel or a pinch.
 - **Scripted moves.** `cam.moveTo(x, y, seconds, { ease, zoom, hold, onDone })` glides to a point; following waits until it arrives, or with `hold: true` until `cam.release()`. `cam.moving` and `cam.held` say where it is.
-- `cam.snap()` jumps to where the camera is heading (a respawn, a teleport), ignoring lag and the deadzone.
+- `cam.snap()` jumps to where the camera is heading (a respawn, a teleport), ignoring lag and the deadzone. During a `moveTo` it finishes the move.
 - **Rotation.** `cam.angle` turns the view. `toWorld`, `toScreen`, `bounds` and `view` all account for it.
 - **Directional kicks.** `cam.kick(10, angle)` pushes the view one way and lets it settle back, for recoil or a landing. `kick(a)` with no angle is the random jolt it was.
 - **Shake options.** `shakeFreq` (wobbles a second) makes the shake smooth and the same at any frame rate; `shakeRoll` adds a roll of up to that many radians; `shakeScale` scales all shake, for a "screen shake" setting or reduced motion.
