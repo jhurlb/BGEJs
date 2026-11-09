@@ -1,5 +1,5 @@
 'use strict';
-/* BGEjs 0.2.0: a small browser game engine. Built from src/ by scripts/bundle.js; edit src/, not this file. */
+/* BGEjs 0.2.1: a small browser game engine. Built from src/ by scripts/bundle.js; edit src/, not this file. */
 
 /* ---- src/core.js ---- */
 /* ================================================================
@@ -535,7 +535,7 @@ class Particles {
   // speed, angle (centre direction), spread (arc width, default a full circle), life, size, color, spin, rot,
   // jitter (life and size vary by this fraction, default 0.3), vx / vy (added to every particle), radius (spawn disc).
   burst(kind, x, y, n, o = {}){
-    const id = this.kindId(kind), R = Rng.main;
+    const id = this.kindId(kind), R = Rng.fx;   // looks only: never shifts gameplay randomness
     const v = (q, d) => q === undefined ? d : typeof q === 'number' ? q : R.range(q[0], q[1]);
     const ang0 = o.angle ?? 0, spread = o.spread ?? TAU, jit = o.jitter ?? 0.3, life = o.life ?? 0.5;
     for (let j = 0; j < n; j++) {
