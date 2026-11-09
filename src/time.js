@@ -27,7 +27,7 @@ const Ease = {
 };
 class Clock {
   constructor(){ this.t = 0; this.items = []; this.tweens = new Map(); }
-  _add(it){ it.cancel = () => { it.dead = true; }; it.then = fn => { if (it.ended) fn(); else it.done = fn; return it; }; this.items.push(it); return it; }   // then() after the end still runs fn
+  _add(it){ it.cancel = () => { it.dead = true; }; it.then = fn => { const prev = it.done; if (it.ended) fn(); else it.done = prev ? () => { prev(); fn(); } : fn; return it; }; this.items.push(it); return it; }   // then() after the end still runs fn
   _end(it){ it.dead = it.ended = true; it.done && it.done(); }
   after(sec, fn){ return this._add({ at: this.t + sec, fn }); }
   every(sec, fn, times = Infinity){ return this._add({ at: this.t + sec, fn, every: sec, left: times }); }

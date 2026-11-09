@@ -117,7 +117,7 @@ class Bus {
   }
   once(name, fn){ const w = (a, b, c) => { this.off(name, w); fn(a, b, c); }; w.fn = fn; return this.on(name, w); }
   off(name, fn){
-    const l = this.map.get(name); if (!l) return;
+    const l = this.map.get(name); if (!l || !fn) return;
     const i = l.findIndex(h => h === fn || h.fn === fn); if (i < 0) return;
     if (l.length === 1) this.map.delete(name); else { const n = l.slice(); n.splice(i, 1); this.map.set(name, n); }
   }
@@ -237,8 +237,8 @@ function ecsBasics(phase = 'update'){
    the gamepad is read once per frame and "pressed this frame" (Input.hit, pressed, padHit, wheel) is cleared after
    each update. A press is then seen by exactly one update, even with a fixed step on a fast display (where some
    frames run no update, and clearing in render would lose the press) or during a hitstop (the press waits for the
-   next update). While Loop.paused the presses are cleared after render instead, so a pause menu driven from render
-   still sees each press once.
+   next update). While nothing can update (Loop.paused, or timeScale 0) the presses are cleared after render instead,
+   so a pause menu driven from render still sees each press once.
    ================================================================ */
 const Loop = {
   update: null, render: null, step: null, maxDt: 1 / 30, maxSteps: 8,
@@ -281,8 +281,10 @@ const Loop = {
         }
       }
     }
+    // Decided before render, which may itself unpause: the press that did so must not reach the next update too.
+    const idle = this.paused || !this.update || !(this.timeScale > 0);
     if (!hidden && this.render) this.render(raw, this.step ? this._acc / this.step : 1);
-    if (auto && (this.paused || !this.update)) Input.endFrame(true);
+    if (auto && idle && !this.updates) Input.endFrame(true);
   },
   _step(dt, auto){ this.update(dt); this.time += dt; this.updates++; if (auto) Input.endFrame(true); },
 };
@@ -317,7 +319,7 @@ const Ease = {
 };
 class Clock {
   constructor(){ this.t = 0; this.items = []; this.tweens = new Map(); }
-  _add(it){ it.cancel = () => { it.dead = true; }; it.then = fn => { if (it.ended) fn(); else it.done = fn; return it; }; this.items.push(it); return it; }   // then() after the end still runs fn
+  _add(it){ it.cancel = () => { it.dead = true; }; it.then = fn => { const prev = it.done; if (it.ended) fn(); else it.done = prev ? () => { prev(); fn(); } : fn; return it; }; this.items.push(it); return it; }   // then() after the end still runs fn
   _end(it){ it.dead = it.ended = true; it.done && it.done(); }
   after(sec, fn){ return this._add({ at: this.t + sec, fn }); }
   every(sec, fn, times = Infinity){ return this._add({ at: this.t + sec, fn, every: sec, left: times }); }
@@ -421,9 +423,10 @@ class Pool {
      save.get('settings', { vol: 0.8 });    // the default comes back when nothing is saved or it can't be read
      save.set('settings', { vol: 0.5 });  save.remove('settings');
      save.update('stats', s => { s.runs++; return s; }, { runs: 0 });   // read, change, write
-     save.keys();  save.clear();            // only this namespace
+     save.keys();  save.clear();            // only this namespace (and not the migration version); a store with no namespace refuses to clear
      save.migrate(2, { 2: data => { ... } });   // runs each step above the saved version once, in order
-   Values are JSON. Keys are stored as `${ns}.${key}`. set() returns false when the value could not be written to disk.
+   Values are JSON. Keys are stored as `${ns}.${key}`, so don't give one game the namespaces 'a' and 'a.b': the first would
+   count the second's keys as its own. set() returns false when the value could not be written to disk; setting undefined removes the key.
    ================================================================ */
 class Store {
   constructor(ns){ this.ns = ns; this.mem = new Map(); this.persistent = true; }
@@ -436,19 +439,20 @@ class Store {
   set(key, v){
     const k = this._k(key); let s;
     try { s = JSON.stringify(v); } catch (e) { return false; }   // a cycle or a BigInt
-    if (s === undefined) return false;
+    if (s === undefined) { this.remove(key); return true; }
     try { localStorage.setItem(k, s); this.mem.delete(k); return true; } catch (e) { this.mem.set(k, s); this.persistent = false; return false; }
   }
-  update(key, fn, def = null){ const v = fn(this.get(key, def)); this.set(key, v); return v; }
+  update(key, fn, def = null){ const cur = this.get(key, def), r = fn(cur), v = r === undefined ? cur : r; this.set(key, v); return v; }   // fn may change the value in place and return nothing
   remove(key){ const k = this._k(key); this.mem.delete(k); try { localStorage.removeItem(k); } catch (e) {} }
   // The keys saved under this namespace (without the prefix).
   keys(){
     const pre = this.ns ? `${this.ns}.` : '', out = new Set();
     for (const k of this.mem.keys()) out.add(k.slice(pre.length));
     try { for (let i = 0; i < localStorage.length; i++) { const k = localStorage.key(i); if (k !== null && k.startsWith(pre)) out.add(k.slice(pre.length)); } } catch (e) {}
+    out.delete('__version');
     return [...out];
   }
-  clear(){ for (const k of this.keys()) this.remove(k); }
+  clear(){ if (this.ns) for (const k of this.keys()) this.remove(k); }
   // steps: { [version]: fn(store) }. Each runs once, lowest first, for versions above the saved one.
   migrate(version, steps = {}){
     const at = this.get('__version', 0);
@@ -638,7 +642,8 @@ class SpatialHash {
 
    A full system drops new particles (overflow: 'drop', the default) or recycles the oldest (overflow: 'replace').
    An emitter that moves lays its particles along the path it travelled since the last update, so a fast trail
-   stays an even line instead of a clump per frame.
+   stays an even line instead of a clump per frame. A jump of more than emitter.maxGap (200) in one update is taken
+   as a teleport and leaves no line.
    Particles.basic(fx) adds ready-made kinds: 'dot', 'spark', 'smoke', 'chip' and 'glow'.
    ================================================================ */
 class Particles {
@@ -694,7 +699,7 @@ class Particles {
   // A continuous source: `rate` particles per second at (x, y), using burst() options. Move it by setting x / y,
   // or follow(obj, dx, dy) to track an object with x / y. on = false pauses it; stop() removes it.
   emitter(kind, o = {}){
-    const e = { kind, x: o.x || 0, y: o.y || 0, rate: o.rate ?? 20, on: true, opts: o, acc: 0, target: null, dx: 0, dy: 0, dead: false, px: NaN, py: NaN,
+    const e = { kind, x: o.x || 0, y: o.y || 0, rate: o.rate ?? 20, on: true, opts: o, acc: 0, target: null, dx: 0, dy: 0, dead: false, px: NaN, py: NaN, maxGap: o.maxGap ?? 200,
       follow(obj, dx = 0, dy = 0){ e.target = obj; e.dx = dx; e.dy = dy; e.px = NaN; return e; },   // no trail from where it was before
       stop(){ e.dead = true; } };
     this.emitters.push(e);
@@ -710,8 +715,8 @@ class Particles {
         e.acc += e.rate * dt; const n = e.acc | 0;
         if (n) {
           e.acc -= n;
-          const mx = e.x - e.px, my = e.y - e.py;
-          if (n > 1 && mx * mx + my * my > 1) for (let j = 1; j <= n; j++) this.burst(e.kind, e.px + mx * j / n, e.py + my * j / n, 1, e.opts);   // spread along the move (NaN, the first time, fails the test)
+          const mx = e.x - e.px, my = e.y - e.py, m2 = mx * mx + my * my;
+          if (n > 1 && m2 > 1 && m2 <= e.maxGap * e.maxGap) for (let j = 1; j <= n; j++) this.burst(e.kind, e.px + mx * j / n, e.py + my * j / n, 1, e.opts);   // spread along the move (NaN, the first time, fails the test)
           else this.burst(e.kind, e.x, e.y, n, e.opts);
         }
       }
@@ -915,7 +920,8 @@ const Input = {
     const k = e.key.toLowerCase();
     if (this._blocked.has(k) && !e.ctrlKey && !e.metaKey && !e.altKey) e.preventDefault();
     if (!e.repeat) this._hitKeys.add(k);
-    this.keys.add(k); if (e.code) this._codes.set(e.code, k);
+    if (e.code) { const was = this._codes.get(e.code); if (was !== undefined && was !== k) this.keys.delete(was); this._codes.set(e.code, k); }   // a held key that repeats under a new name (Shift went down) has one name at a time
+    this.keys.add(k);
   },
   // The key that comes up can have another name than the one that went down (hold 1, press Shift, release: "!"), so
   // the physical key is matched too. macOS sends no key-up for keys released while Cmd is held: Cmd up releases them all.
@@ -932,7 +938,7 @@ const Input = {
   _ptrMove(e){
     const p = this.pointer; p.x = e.clientX; p.y = e.clientY; p.type = e.pointerType; if (e.pointerType === 'mouse') p.hasMouse = true;
     if (e.button >= 0 && e.button < 5 && e.pointerType === 'mouse') {
-      if (e.buttons & [1, 4, 2, 8, 16][e.button]) this._ptrDown(e); else { this._ptrs.delete(e.pointerId * 8 + e.button); p.down = this._ptrs.size > 0; }
+      if (e.buttons & [1, 4, 2, 8, 16][e.button]) { if (!this._ptrs.has(e.pointerId * 8 + e.button)) this._ptrDown(e); } else { this._ptrs.delete(e.pointerId * 8 + e.button); p.down = this._ptrs.size > 0; }
     }
   },
   _ptrUp(e){
@@ -1149,17 +1155,21 @@ const Sprites = {
   map: new Map(), max: 800, made: 0,
   get(key, R, ds, draw){
     let sp = this.map.get(key);
+    if (sp && sp.raw === ds) { this.map.delete(key); this.map.set(key, sp); return sp; }   // the usual case: same scale as last time
+    // Scales are rounded up to one of 16 sizes per doubling, so a scale that changes every frame (a zoom tween, a window
+    // being dragged) makes a handful of copies, not one per frame.
+    const raw = ds; ds = 2 ** (Math.ceil(Math.log2(ds) * 16 - 1e-9) / 16);
     if (sp && sp.ds !== ds) {
       // Drawn for another scale. The plain key always holds the scale asked for last, so the usual case (one scale at a
       // time) builds no string; the other copies wait under key@scale.
       this.map.delete(key); this.map.set(key + '@' + sp.ds, sp);
       const k2 = key + '@' + ds; sp = this.map.get(k2);
-      if (sp) { this.map.delete(k2); this.map.set(key, sp); return sp; }
-    } else if (sp) { this.map.delete(key); this.map.set(key, sp); return sp; }   // mark as recently used
+      if (sp) { this.map.delete(k2); this.map.set(key, sp); sp.raw = raw; return sp; }
+    } else if (sp) { this.map.delete(key); this.map.set(key, sp); sp.raw = raw; return sp; }   // mark as recently used
     const px = Math.ceil(2 * R * ds) + 2, cnv = document.createElement('canvas'); cnv.width = cnv.height = px;
     const c = cnv.getContext('2d'); c.setTransform(ds, 0, 0, ds, px / 2, px / 2); c.lineCap = 'round';
     draw(c);
-    sp = { cv: cnv, h: px / 2 / ds, w: px / ds, ds }; this.map.set(key, sp); this.made++;
+    sp = { cv: cnv, h: px / 2 / ds, w: px / ds, ds, raw }; this.map.set(key, sp); this.made++;
     if (this.map.size > this.max) this.map.delete(this.map.keys().next().value);   // drop the least recently used
     return sp;
   },

@@ -7,9 +7,10 @@
      save.get('settings', { vol: 0.8 });    // the default comes back when nothing is saved or it can't be read
      save.set('settings', { vol: 0.5 });  save.remove('settings');
      save.update('stats', s => { s.runs++; return s; }, { runs: 0 });   // read, change, write
-     save.keys();  save.clear();            // only this namespace
+     save.keys();  save.clear();            // only this namespace (and not the migration version); a store with no namespace refuses to clear
      save.migrate(2, { 2: data => { ... } });   // runs each step above the saved version once, in order
-   Values are JSON. Keys are stored as `${ns}.${key}`. set() returns false when the value could not be written to disk.
+   Values are JSON. Keys are stored as `${ns}.${key}`, so don't give one game the namespaces 'a' and 'a.b': the first would
+   count the second's keys as its own. set() returns false when the value could not be written to disk; setting undefined removes the key.
    ================================================================ */
 class Store {
   constructor(ns){ this.ns = ns; this.mem = new Map(); this.persistent = true; }
@@ -22,19 +23,20 @@ class Store {
   set(key, v){
     const k = this._k(key); let s;
     try { s = JSON.stringify(v); } catch (e) { return false; }   // a cycle or a BigInt
-    if (s === undefined) return false;
+    if (s === undefined) { this.remove(key); return true; }
     try { localStorage.setItem(k, s); this.mem.delete(k); return true; } catch (e) { this.mem.set(k, s); this.persistent = false; return false; }
   }
-  update(key, fn, def = null){ const v = fn(this.get(key, def)); this.set(key, v); return v; }
+  update(key, fn, def = null){ const cur = this.get(key, def), r = fn(cur), v = r === undefined ? cur : r; this.set(key, v); return v; }   // fn may change the value in place and return nothing
   remove(key){ const k = this._k(key); this.mem.delete(k); try { localStorage.removeItem(k); } catch (e) {} }
   // The keys saved under this namespace (without the prefix).
   keys(){
     const pre = this.ns ? `${this.ns}.` : '', out = new Set();
     for (const k of this.mem.keys()) out.add(k.slice(pre.length));
     try { for (let i = 0; i < localStorage.length; i++) { const k = localStorage.key(i); if (k !== null && k.startsWith(pre)) out.add(k.slice(pre.length)); } } catch (e) {}
+    out.delete('__version');
     return [...out];
   }
-  clear(){ for (const k of this.keys()) this.remove(k); }
+  clear(){ if (this.ns) for (const k of this.keys()) this.remove(k); }
   // steps: { [version]: fn(store) }. Each runs once, lowest first, for versions above the saved one.
   migrate(version, steps = {}){
     const at = this.get('__version', 0);

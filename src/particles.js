@@ -19,7 +19,8 @@
 
    A full system drops new particles (overflow: 'drop', the default) or recycles the oldest (overflow: 'replace').
    An emitter that moves lays its particles along the path it travelled since the last update, so a fast trail
-   stays an even line instead of a clump per frame.
+   stays an even line instead of a clump per frame. A jump of more than emitter.maxGap (200) in one update is taken
+   as a teleport and leaves no line.
    Particles.basic(fx) adds ready-made kinds: 'dot', 'spark', 'smoke', 'chip' and 'glow'.
    ================================================================ */
 class Particles {
@@ -75,7 +76,7 @@ class Particles {
   // A continuous source: `rate` particles per second at (x, y), using burst() options. Move it by setting x / y,
   // or follow(obj, dx, dy) to track an object with x / y. on = false pauses it; stop() removes it.
   emitter(kind, o = {}){
-    const e = { kind, x: o.x || 0, y: o.y || 0, rate: o.rate ?? 20, on: true, opts: o, acc: 0, target: null, dx: 0, dy: 0, dead: false, px: NaN, py: NaN,
+    const e = { kind, x: o.x || 0, y: o.y || 0, rate: o.rate ?? 20, on: true, opts: o, acc: 0, target: null, dx: 0, dy: 0, dead: false, px: NaN, py: NaN, maxGap: o.maxGap ?? 200,
       follow(obj, dx = 0, dy = 0){ e.target = obj; e.dx = dx; e.dy = dy; e.px = NaN; return e; },   // no trail from where it was before
       stop(){ e.dead = true; } };
     this.emitters.push(e);
@@ -91,8 +92,8 @@ class Particles {
         e.acc += e.rate * dt; const n = e.acc | 0;
         if (n) {
           e.acc -= n;
-          const mx = e.x - e.px, my = e.y - e.py;
-          if (n > 1 && mx * mx + my * my > 1) for (let j = 1; j <= n; j++) this.burst(e.kind, e.px + mx * j / n, e.py + my * j / n, 1, e.opts);   // spread along the move (NaN, the first time, fails the test)
+          const mx = e.x - e.px, my = e.y - e.py, m2 = mx * mx + my * my;
+          if (n > 1 && m2 > 1 && m2 <= e.maxGap * e.maxGap) for (let j = 1; j <= n; j++) this.burst(e.kind, e.px + mx * j / n, e.py + my * j / n, 1, e.opts);   // spread along the move (NaN, the first time, fails the test)
           else this.burst(e.kind, e.x, e.y, n, e.opts);
         }
       }

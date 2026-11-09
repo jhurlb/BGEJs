@@ -94,7 +94,8 @@ const Input = {
     const k = e.key.toLowerCase();
     if (this._blocked.has(k) && !e.ctrlKey && !e.metaKey && !e.altKey) e.preventDefault();
     if (!e.repeat) this._hitKeys.add(k);
-    this.keys.add(k); if (e.code) this._codes.set(e.code, k);
+    if (e.code) { const was = this._codes.get(e.code); if (was !== undefined && was !== k) this.keys.delete(was); this._codes.set(e.code, k); }   // a held key that repeats under a new name (Shift went down) has one name at a time
+    this.keys.add(k);
   },
   // The key that comes up can have another name than the one that went down (hold 1, press Shift, release: "!"), so
   // the physical key is matched too. macOS sends no key-up for keys released while Cmd is held: Cmd up releases them all.
@@ -111,7 +112,7 @@ const Input = {
   _ptrMove(e){
     const p = this.pointer; p.x = e.clientX; p.y = e.clientY; p.type = e.pointerType; if (e.pointerType === 'mouse') p.hasMouse = true;
     if (e.button >= 0 && e.button < 5 && e.pointerType === 'mouse') {
-      if (e.buttons & [1, 4, 2, 8, 16][e.button]) this._ptrDown(e); else { this._ptrs.delete(e.pointerId * 8 + e.button); p.down = this._ptrs.size > 0; }
+      if (e.buttons & [1, 4, 2, 8, 16][e.button]) { if (!this._ptrs.has(e.pointerId * 8 + e.button)) this._ptrDown(e); } else { this._ptrs.delete(e.pointerId * 8 + e.button); p.down = this._ptrs.size > 0; }
     }
   },
   _ptrUp(e){

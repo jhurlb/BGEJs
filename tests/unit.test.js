@@ -409,3 +409,49 @@ test('Sprites: one cached copy per scale, sheets cut frames in rows, animations 
   die.reset(); eq(die.frame, 1); assert.ok(!die.done);
   draws.length = 0; run.reset().draw(ctx, 0, 0); eq(draws[0].slice(1, 3), [1, 19]);
 });
+
+// ---- found in review of 0.3.0
+
+test('Loop autoInput: the press that unpauses from render is not seen again, and timeScale 0 clears like a pause', () => {
+  const { Loop, Input, fire } = page(), log = [];
+  Object.assign(Loop, { autoInput: true, update(){ if (Input.pressed('p')) { Loop.paused = true; log.push('pause'); } }, render(){ if (Loop.paused && Input.pressed('p')) { Loop.paused = false; log.push('resume'); } } });
+  const tap = () => { fire('keydown', { key: 'p', code: 'KeyP' }); fire('keyup', { key: 'p', code: 'KeyP' }); };
+  let t = frames(Loop, 2, 16); tap(); t = frames(Loop, 3, 16, t); eq(log, ['pause']);   // update paused it and cleared the press
+  tap(); t = frames(Loop, 5, 16, t); eq(log, ['pause', 'resume']); assert.ok(!Loop.paused);
+  let seen = 0; Object.assign(Loop, { timeScale: 0, update(){}, render(){ if (Input.pressed('x')) seen++; } });
+  fire('keydown', { key: 'x', code: 'KeyX' }); fire('wheel', { deltaY: 1 }); frames(Loop, 5, 16, t); assert.strictEqual(seen, 1); assert.strictEqual(Input.wheel, 0);
+});
+
+test('Input: a held key that repeats under a new name is still released; a drag is one press', () => {
+  const { Input, keys, fire } = page();
+  fire('keydown', { key: '1', code: 'Digit1' }); fire('keydown', { key: 'Shift', code: 'ShiftLeft' }); fire('keydown', { key: '!', code: 'Digit1', repeat: true });
+  eq([...keys].sort(), ['!', 'shift']); fire('keyup', { key: '!', code: 'Digit1' }); fire('keyup', { key: 'Shift', code: 'ShiftLeft' }); assert.strictEqual(keys.size, 0);
+  Input.bind('fire', ['mouse:0']);
+  fire('pointerdown', { pointerId: 1, button: 0, buttons: 1, pointerType: 'mouse' }); Input.endFrame();
+  fire('pointermove', { pointerId: 1, button: 0, buttons: 1, pointerType: 'mouse' }); assert.ok(Input.down('fire') && !Input.hit('fire'));
+});
+
+test('Bus.off with no handler removes nothing; a timer handle can have several then()s', async () => {
+  const bus = new X.Bus(); let n = 0; bus.on('e', () => n++); bus.off('e', undefined); bus.emit('e'); assert.strictEqual(n, 1);
+  const k = new X.Clock(), log = [], h = k.after(0.1).then(() => log.push('a')); h.then(() => log.push('b'));
+  const both = Promise.all([(async () => { await h; log.push('c'); })(), (async () => { await h; log.push('d'); })()]);
+  await null; await null; k.update(0.2); await both; eq(log.sort(), ['a', 'b', 'c', 'd']);
+});
+
+test('Store: clear keeps the migration version and needs a namespace; undefined removes; update() accepts in-place changes', () => {
+  const s = new X.Store('rv'); let ran = 0;
+  s.migrate(1, { 1: () => ran++ }); s.set('a', 1); eq(s.keys(), ['a']); s.clear(); s.migrate(1, { 1: () => ran++ }); assert.strictEqual(ran, 1);
+  s.set('run', { lvl: 3 }); assert.strictEqual(s.set('run', undefined), true); eq(s.get('run', 'none'), 'none');
+  s.set('stats', { runs: 1 }); eq(s.update('stats', v => { v.runs++; }), { runs: 2 }); eq(s.get('stats'), { runs: 2 });
+  const bare = new X.Store(); bare.clear(); eq(s.get('stats'), { runs: 2 });
+});
+
+test('Sprites: a scale that changes every frame makes a few copies, not one per frame; a teleporting emitter leaves no streak', () => {
+  const { Sprites } = page(); let made = 0;
+  for (let i = 0; i < 120; i++) Sprites.get('z', 10, 1 + i / 120, () => made++);   // a zoom tween from 1x to 2x
+  assert.ok(made <= 17, `made ${made}`); assert.ok(Sprites.map.size <= 17);
+  const sp = Sprites.get('z', 10, 1.5, () => made++); assert.ok(sp.ds >= 1.5 && sp.ds < 1.5 * 1.045, 'never blurrier than asked, at most 4.4% larger');
+  const P = new X.Particles(100); P.kind('a', { draw(){} });
+  const e = P.emitter('a', { rate: 100, speed: 0, life: 10 }); P.update(0.1); e.x = 1000; P.update(0.1);
+  eq([...P.x.slice(10, 20)], Array(10).fill(1000));
+});

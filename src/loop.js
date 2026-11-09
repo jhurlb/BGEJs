@@ -16,8 +16,8 @@
    the gamepad is read once per frame and "pressed this frame" (Input.hit, pressed, padHit, wheel) is cleared after
    each update. A press is then seen by exactly one update, even with a fixed step on a fast display (where some
    frames run no update, and clearing in render would lose the press) or during a hitstop (the press waits for the
-   next update). While Loop.paused the presses are cleared after render instead, so a pause menu driven from render
-   still sees each press once.
+   next update). While nothing can update (Loop.paused, or timeScale 0) the presses are cleared after render instead,
+   so a pause menu driven from render still sees each press once.
    ================================================================ */
 const Loop = {
   update: null, render: null, step: null, maxDt: 1 / 30, maxSteps: 8,
@@ -60,8 +60,10 @@ const Loop = {
         }
       }
     }
+    // Decided before render, which may itself unpause: the press that did so must not reach the next update too.
+    const idle = this.paused || !this.update || !(this.timeScale > 0);
     if (!hidden && this.render) this.render(raw, this.step ? this._acc / this.step : 1);
-    if (auto && (this.paused || !this.update)) Input.endFrame(true);
+    if (auto && idle && !this.updates) Input.endFrame(true);
   },
   _step(dt, auto){ this.update(dt); this.time += dt; this.updates++; if (auto) Input.endFrame(true); },
 };

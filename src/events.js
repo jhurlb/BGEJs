@@ -19,7 +19,7 @@ class Bus {
   }
   once(name, fn){ const w = (a, b, c) => { this.off(name, w); fn(a, b, c); }; w.fn = fn; return this.on(name, w); }
   off(name, fn){
-    const l = this.map.get(name); if (!l) return;
+    const l = this.map.get(name); if (!l || !fn) return;
     const i = l.findIndex(h => h === fn || h.fn === fn); if (i < 0) return;
     if (l.length === 1) this.map.delete(name); else { const n = l.slice(); n.splice(i, 1); this.map.set(name, n); }
   }

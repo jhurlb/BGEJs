@@ -13,23 +13,23 @@
 - **Particles: `spawn()` with an unknown kind threw after taking a slot**, leaving a stale particle behind. A kind with no `draw` now fails in `kind()`, not later inside `draw()`.
 - **ECS: `World.add()` on a destroyed entity left a component with no entity**, which queries then kept returning for ever. It now does nothing and returns `undefined`.
 - **Scenes: `go()` or `push()` with an unknown name** threw after the current scenes had already been exited or paused. The name is checked first.
-- **Sprites: a cached sprite was stretched after a zoom or a resize** unless the game put the scale in the key itself. `Sprites.get` now keeps one copy per scale.
+- **Sprites: a cached sprite was stretched after a zoom or a resize** unless the game put the scale in the key itself. `Sprites.get` now keeps one copy per scale, rounding the scale up to one of 16 sizes per doubling so a smooth zoom makes a handful of copies.
 - **Sound: `muted = true` did not silence sounds already playing**, and drones only noticed at their next `set()`. It now acts on the master gain. `Sound.load` reports a missing file by name instead of failing inside the decoder.
 - **Camera: the `view` rect ignored screen shake**, so culled things could pop at the screen edge during a shake.
 - **Orb Sweep never read the gamepad** (nothing called `Input.pollPad()`), although it lists pad controls.
 
 ### Added
 
-- `Loop.start({ autoInput: true })`: the loop calls `Input.pollPad()` and `Input.endFrame()` itself, after each update rather than each frame. With a fixed step on a fast display some frames run no update, and clearing presses in `render` loses them; this way each press reaches exactly one update. Presses also wait out a hitstop. `Loop.updates` is the number of updates in the current frame.
+- `Loop.start({ autoInput: true })`: the loop calls `Input.pollPad()` and `Input.endFrame()` itself, after each update rather than each frame. With a fixed step on a fast display some frames run no update, and clearing presses in `render` loses them; this way each press reaches exactly one update. Presses also wait out a hitstop. While paused or at `timeScale` 0 they are cleared after `render`, so a menu drawn from `render` sees each press once. `Loop.updates` is the number of updates in the current frame.
 - `Input.block([...])` stops chosen keys scrolling the page; `Input.wheel`; `Input.mouseDown(button)`; `Input.unbind`; `Input.releaseAll()`.
 - `SpatialHash.within(x, y, r)`: exactly the things whose own circle touches the query circle, so callers no longer pad the radius and re-check distances. `hash.maxR` is the largest radius inserted.
 - `Collide.rayBox`, `Collide.segments`, `Collide.pushOutOfBox` and `Collide.bounce`, with the surface normal in `Collide.nx / ny`.
 - `Sprites.sheet(image, frameW, frameH)`: frames from a grid image, with `draw()` (size, rotation, flips, alpha, anchor) and `anim()` frame animations.
-- `Store.update`, `Store.keys`, `Store.clear`, and a memory fallback: when storage is blocked or full, values last for the session and `store.persistent` is `false`.
+- `Store.update`, `Store.keys`, `Store.clear`, and a memory fallback: when storage is blocked or full, values last for the session and `store.persistent` is `false`. `clear()` keeps the migration version and does nothing on a store with no namespace.
 - `Ease`: `inSine`, `outSine`, `inOutSine`, `inBack`, `inOutBack`, `inOutExpo`. Timer and tween handles can be awaited.
 - `Bus.emit` passes up to three arguments; `off()` also removes a `once()` handler; `Bus.count(name)`.
 - `World.exists(id)`, `World.size`, `World.clear()`. A drone has `stop()`.
-- A moving particle emitter spreads its particles along the path it travelled, so a fast trail is a line rather than a clump per frame.
+- A moving particle emitter spreads its particles along the path it travelled, so a fast trail is a line rather than a clump per frame. A jump of more than `emitter.maxGap` (200) counts as a teleport.
 
 ### Faster
 

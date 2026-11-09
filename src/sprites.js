@@ -21,17 +21,21 @@ const Sprites = {
   map: new Map(), max: 800, made: 0,
   get(key, R, ds, draw){
     let sp = this.map.get(key);
+    if (sp && sp.raw === ds) { this.map.delete(key); this.map.set(key, sp); return sp; }   // the usual case: same scale as last time
+    // Scales are rounded up to one of 16 sizes per doubling, so a scale that changes every frame (a zoom tween, a window
+    // being dragged) makes a handful of copies, not one per frame.
+    const raw = ds; ds = 2 ** (Math.ceil(Math.log2(ds) * 16 - 1e-9) / 16);
     if (sp && sp.ds !== ds) {
       // Drawn for another scale. The plain key always holds the scale asked for last, so the usual case (one scale at a
       // time) builds no string; the other copies wait under key@scale.
       this.map.delete(key); this.map.set(key + '@' + sp.ds, sp);
       const k2 = key + '@' + ds; sp = this.map.get(k2);
-      if (sp) { this.map.delete(k2); this.map.set(key, sp); return sp; }
-    } else if (sp) { this.map.delete(key); this.map.set(key, sp); return sp; }   // mark as recently used
+      if (sp) { this.map.delete(k2); this.map.set(key, sp); sp.raw = raw; return sp; }
+    } else if (sp) { this.map.delete(key); this.map.set(key, sp); sp.raw = raw; return sp; }   // mark as recently used
     const px = Math.ceil(2 * R * ds) + 2, cnv = document.createElement('canvas'); cnv.width = cnv.height = px;
     const c = cnv.getContext('2d'); c.setTransform(ds, 0, 0, ds, px / 2, px / 2); c.lineCap = 'round';
     draw(c);
-    sp = { cv: cnv, h: px / 2 / ds, w: px / ds, ds }; this.map.set(key, sp); this.made++;
+    sp = { cv: cnv, h: px / 2 / ds, w: px / ds, ds, raw }; this.map.set(key, sp); this.made++;
     if (this.map.size > this.max) this.map.delete(this.map.keys().next().value);   // drop the least recently used
     return sp;
   },
