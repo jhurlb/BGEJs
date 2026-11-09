@@ -18,7 +18,7 @@
                                            // vel: read the lead's velocity from this { x, y } (an ECS Vel) instead of the target; it lasts until the next follow()
      cam.frame([p1, p2, boss], { padding: 80, minZoom: 0.25, maxZoom: 1, lag: 0.01 });   // keep several things in shot: centres on them and
                                            // zooms to fit (their r counts). The list is read every update, so add and remove freely. zoom: false only centres.
-                                           // With bounds set it never zooms out past the world (unless maxZoom says the world is too small to fill the view)
+                                           // With bounds set it zooms out no farther than it takes to show the whole world
      cam.snap();                           // jump straight to where the camera is heading (after a teleport or a respawn). During a moveTo it finishes the move
    A measured lead reads any jump of the aim point as speed, so call snap() after a teleport or after changing who is in a framed group.
 
@@ -32,7 +32,8 @@
      await cam.moveTo(x, y, 1).wait();     // wait() is a promise for the end of the first update with no move, zoom, blend or slide running
    Cancelling a move cancels its zoom too. A zoomTo or zoomAt replaces a zoom that is running, and the replaced one's onDone is not called.
    A blend or a bounds slide only changes how the view gets there: following, moves and bounds carry on underneath and the view glides
-   from where it was to wherever they are. It runs out its time whatever else is called; only snap() ends it early.
+   from where it was to wherever they are. It runs out its time whatever else is called: snap() ends it early and a new blend or slide
+   starts again from the view as it is. Meanwhile cam.x, y are the gliding view, and a value written to them lasts only until the next update.
 
    Shake
      cam.addTrauma(0.5);                   // trauma squared x shakeMax pixels, trauma falls by shakeDecay per second
@@ -61,7 +62,7 @@ class Camera {
   }
   follow(t, lag = 0, o){
     this._stop(); this.target = t; this.lag = lag; this.group = this._fit = null; this._lead0(); this.leadVel = (o && o.vel) || null;
-    if (t && o && o.blend > 0) this._blend(o.blend, o.ease, t.x, t.y);
+    if (t && o && o.blend > 0) { const f = this.offset; this._blend(o.blend, o.ease, t.x + (f ? f.x : 0), t.y + (f ? f.y : 0)); }
     else if (t && !lag) this._put(t.x, t.y);
     return this;
   }
@@ -99,7 +100,7 @@ class Camera {
     return this;
   }
   fit(r, secs = 0.5, o = {}){
-    const co = Math.abs(Math.cos(this.angle)), si = Math.abs(Math.sin(this.angle)), w = r.x1 - r.x0, h = r.y1 - r.y0, p = (o.padding || 0) * 2;
+    const co = Math.abs(Math.cos(this.angle)), si = Math.abs(Math.sin(this.angle)), w = Math.abs(r.x1 - r.x0), h = Math.abs(r.y1 - r.y0), p = (o.padding || 0) * 2;
     const fw = w * co + h * si + p, fh = w * si + h * co + p, z = Math.min(fw > 0 ? vw / fw : Infinity, fh > 0 ? vh / fh : Infinity) / scale;
     return this.moveTo((r.x0 + r.x1) / 2, (r.y0 + r.y1) / 2, secs, { ease: o.ease, hold: o.hold, onDone: o.onDone, zoom: z < Infinity ? z : null });
   }
@@ -137,8 +138,8 @@ class Camera {
       const ox = o ? Math.abs(o.x) : 0, oy = o ? Math.abs(o.y) : 0;
       const fw = w * co + h * si + (ox * co + oy * si + f.pad) * 2, fh = w * si + h * co + (ox * si + oy * co + f.pad) * 2;
       let z = clamp(Math.min(fw > 0 ? vw / fw : Infinity, fh > 0 ? vh / fh : Infinity) / scale, f.min, f.max);
-      const b = this.bounds;   // no farther out than the world fills the view, when maxZoom allows that
-      if (b) z = Math.max(z, Math.min(f.max, Math.max((vw * co + vh * si) / (b.x1 - b.x0), (vw * si + vh * co) / (b.y1 - b.y0)) / scale));
+      const b = this.bounds;   // no farther out than it takes to show the whole world, when maxZoom allows that
+      if (b) z = Math.max(z, Math.min(f.max, Math.min((vw * co + vh * si) / (b.x1 - b.x0), (vw * si + vh * co) / (b.y1 - b.y0)) / scale));
       this._gz = z < Infinity ? z : this.zoom;   // a single point with no padding and no top limit: nothing to fit, so stay as it is
     }
     return true;
@@ -215,7 +216,7 @@ class Camera {
     c.setTransform(co, si, -si, co, e, f);
   }
   applyScreen(c){ c.setTransform(dpr, 0, 0, dpr, 0, 0); }
-  layerView(parallax, out = {}){
+  layerView(parallax = 1, out = {}){
     const v = this.view, hw = (v.x1 - v.x0) / 2, hh = (v.y1 - v.y0) / 2, x = this.x * parallax, y = this.y * parallax;
     out.x0 = x - hw; out.y0 = y - hh; out.x1 = x + hw; out.y1 = y + hh; return out;
   }

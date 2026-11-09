@@ -16,8 +16,9 @@ More camera. Everything in 0.5 works the same, with one change to framing noted 
 
 ### Changes to check when upgrading
 
-- `frame()` with `bounds` set no longer zooms out past the world: it stops where the world fills the view (or at `maxZoom`, when the world is too small for that). Before, the view was centred on the world with empty space round it.
-- The camera has new properties `leadVel` and `wait`. `follow()` takes a third argument.
+- `frame()` with `bounds` set zooms out no farther than it takes to show the whole world (or stops at `maxZoom`, when that is closer). Before, a group spread wider than the world shrank the world to a patch in the middle of the screen.
+- The camera has a new property `leadVel` and new methods `fit`, `setBounds`, `wait` and `layerView`. `follow()` takes a third argument.
+- While a blend or a bounds slide runs, `cam.x, y` are the gliding view and a value written to them lasts only until the next update. Use `snap()` first, or `moveTo`.
 
 ## 0.5.0
 
