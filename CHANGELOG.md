@@ -1,5 +1,32 @@
 # Changelog
 
+## 0.7.0
+
+Physics. Nothing that existed has changed its behaviour, apart from the one fix below.
+
+### Added
+
+- **`Physics`: a world of bodies** (new file `physics.js`). `world.add()` takes your own objects, as circles `{ x, y, r }`, boxes `{ x, y, w, h }` or convex polygons `{ x, y, pts }`, and `world.step(dt)` moves them: gravity, mass, `bounce`, `friction`, `drag`, things that rest in stacks, `fixed` walls, fixed bodies with a velocity as moving platforms that carry their riders, `oneWay` platforms, `sensor` bodies that report touches without pushing, and `layer` / `mask` to choose who meets whom. Bodies do not rotate.
+- **Nothing tunnels through a wall.** Every pair is tested along the whole of its movement, not only where it ends up, so a bullet moving many times its own size per step still hits a wall one unit thick, and a small fast sensor still reports the enemy it flew through.
+- **Floors and walls built from tiles are smooth.** Something sliding along a row of boxes does not catch on the seams between them, the usual trouble with tile maps.
+- **What touched what.** After each step a body's `touch` holds the sides being pressed on (1 left, 2 right, 4 top, 8 bottom, as `Collide.clampToBox` returns), so `player.touch & 8` is "standing on something". A body's own `onHit(other, nx, ny, speed)` and `onLeave(other)`, and `world.onBegin` / `world.onEnd`, are called once when a touch starts and once when it ends, after the step, so handlers may add and remove bodies.
+- `world.raycast(ox, oy, dx, dy, max, filter)`, `world.query(shape)`, `world.walls(box)`, `world.filter`, `world.draw(ctx)` for seeing the shapes while building a level, and `substeps` / `iterations` to trade speed for exactness.
+- **`Collide` for any two shapes**, where a shape is a circle, a box or a convex polygon (wound either way):
+  - `Collide.overlap(a, b)`: how deep they overlap, with the shortest way out in `Collide.nx / ny`.
+  - `Collide.sweep(a, dx, dy, b)`: when a moving shape first touches another, as a share of the move, with the surface normal. Exact for every pair of shapes.
+  - `Collide.ray(ox, oy, dx, dy, shape)`: a ray against any shape, always with the normal (`rayCircle` alone leaves none).
+  - `Collide.resolve(a, b, bounce, friction)`: a whole collision in one call, for games that move things themselves: pushes the two apart by mass and exchanges momentum.
+- `examples/tumble`: a small platformer sandbox on the physics world.
+
+### Fixed
+
+- **`Collide.separate` with `mass: Infinity` turned the other body's position into `NaN`.** An infinite mass, or `fixed: true`, now means "never moved", here and in everything above.
+
+### Changes to check when upgrading
+
+- `Physics` is a new global name.
+- `Collide.separate` leaves an object with `fixed: true` where it is. It used to treat it like any other.
+
 ## 0.6.0
 
 More camera. Everything in 0.5 works the same, with one change to framing noted below.
