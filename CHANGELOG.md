@@ -22,6 +22,8 @@ Particles. Everything that worked in 0.3 works the same: existing kinds, `spawn`
 ### Changes to check when upgrading
 
 - A kind definition's `size`, `alpha`, `colors`, `shape`, `image`, `wind`, `layer` and `onDeath` now mean something. A kind that happened to carry a property with one of those names for its own `draw()` should rename it.
+- `Particles.basic` now also defines kinds `ring`, `flash` and `ember`. A kind of your own with one of those names should be defined after `basic()`, not before, or `basic()` replaces it.
+- `burst()` takes its random numbers from `Rng.fx` in a different order, so a game that seeds `Rng.fx` to get the same sparks every run will get different ones.
 - The private `Particles._swap` is gone (`_kill` replaces it).
 
 ## 0.3.0

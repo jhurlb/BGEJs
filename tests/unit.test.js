@@ -518,7 +518,7 @@ test('Particles: replace always recycles the oldest, through any mix of spawns a
   let serial = 0; const live = [];
   const check = () => {
     eq([...P.x.slice(0, P.count)].sort((a, b) => a - b), live.map(p => p.s));
-    let seen = 0, last = -1; for (let i = P._head; i >= 0; i = P._next[i]) { assert.ok(P.x[i] > last, 'age order'); last = P.x[i]; seen++; assert.strictEqual(P._prev[i], seen === 1 ? -1 : P._prev[i]); }
+    let seen = 0, last = -1, before = -1; for (let i = P._head; i >= 0; i = P._next[i]) { assert.ok(P.x[i] > last, 'age order'); last = P.x[i]; seen++; assert.strictEqual(P._prev[i], before); before = i; }
     assert.strictEqual(seen, P.count); if (P.count) { assert.strictEqual(P.x[P._tail], last); assert.strictEqual(P._prev[P._head], -1); assert.strictEqual(P._next[P._tail], -1); }
   };
   for (let step = 0; step < 400; step++) {
@@ -557,9 +557,9 @@ test('Particles: emitter pulses, delay, duration and inherited velocity', () => 
   P.update(0.3); assert.strictEqual(P.count, 7); P.update(0.2); assert.strictEqual(P.count, 14); P.update(1); assert.strictEqual(P.count, 28); pulse.stop();
   P.clear(); let done = null;
   const e = P.emitter('a', { rate: 100, delay: 0.25, duration: 0.5, speed: 0, life: 100, onDone: em => { done = em; } });
-  P.update(0.2); assert.strictEqual(P.count, 0); P.update(0.1); assert.strictEqual(P.count, 0);   // the delay is over; emitting starts with the next update
-  P.update(0.25); assert.strictEqual(P.count, 25); assert.strictEqual(done, null);
-  P.update(0.25); assert.strictEqual(P.count, 50); assert.strictEqual(done, e); assert.ok(e.dead); assert.strictEqual(P.emitters.length, 0);
+  P.update(0.2); assert.strictEqual(P.count, 0); P.update(0.1); assert.strictEqual(P.count, 5);   // the 0.05 s left after the delay emits
+  P.update(0.25); assert.strictEqual(P.count, 30); assert.strictEqual(done, null);
+  P.update(0.25); assert.strictEqual(P.count, 50); assert.strictEqual(done, e);   // only the 0.2 s before the end emits assert.ok(e.dead); assert.strictEqual(P.emitters.length, 0);
   P.update(1); assert.strictEqual(P.count, 50);
   P.clear(); const t = P.emitter('a', { rate: 100, speed: 0, life: 100, inherit: 0.5 }); t.x = 0; P.update(0.1);
   near(P.vx[0], 0);   // no velocity known on its first update
@@ -578,7 +578,8 @@ test('Particles: effects fire their layers, scaled and aimed', () => {
   near(P.size[0], 20); assert.strictEqual(P.color[0], '#0f0'); near(P.vx[0], 1000);
   for (let i = 1; i < 11; i++) { near(P.size[i], 4); near(P.vy[i], 200, 0.1); near(P.vx[i], 1000, 2); near(Math.hypot(P.x[i], P.y[i]), 20, 1e-3); }
   const B = X.Particles.basic(new X.Particles(500)); for (const name of ['explosion', 'hit', 'puff', 'sparkle']) { B.clear(); B.play(name, 0, 0); assert.ok(B.count > 0, name); }
-  B.clear(); B.play('explosion', 0, 0); const n1 = B.count; B.clear(); B.play('explosion', 0, 0, { count: 2 }); assert.strictEqual(B.count, n1 * 2 - 2);   // the flash and the ring stay single
+  B.clear(); B.play('explosion', 0, 0); const n1 = B.count; B.clear(); B.play('explosion', 0, 0, { count: 2 }); assert.strictEqual(B.count, n1 * 2);
+  B.clear(); B.play('explosion', 0, 0, { count: 0.01 }); assert.strictEqual(B.count, 5); B.clear(); B.play('explosion', 0, 0, { count: 0 }); assert.strictEqual(B.count, 0);   // never below one a layer, unless count is 0
 });
 
 test('Particles: onDeath, wind, layers and warm', () => {
@@ -596,4 +597,46 @@ test('Particles: onDeath, wind, layers and warm', () => {
   drawn = []; P.draw(c, { x0: 1e5, y0: 1e5, x1: 1e5, y1: 1e5 }, 1); eq(drawn, []);
   const W = new X.Particles(1000); W.kind('a', { gravity: -10, draw(){} }); W.emitter('a', { rate: 30, speed: 0, life: 100 });
   assert.strictEqual(W.warm(2), W); assert.ok(W.count === 59 || W.count === 60, W.count); assert.ok(W.y[0] < -15); const n0 = W.count; W.warm(0.05, 0.02); assert.ok(W.count - n0 >= 1 && W.count - n0 <= 2);   // three steps: 0.02, 0.02, 0.01
+});
+
+test('Particles: durations and pulses are exact at any frame rate, and onDone may clear or start emitters', () => {
+  const run = (opts, dt, total) => { const P = new X.Particles(4000); P.kind('a', { draw(){} }); P.emitter('a', { speed: 0, life: 1e6, ...opts }); for (let t = 0; t < total - 1e-9; t += dt) P.update(dt); return P.count; };
+  for (const dt of [1 / 60, 1 / 30, 0.1, 0.25, 1, 5]) {
+    assert.strictEqual(run({ rate: 20, duration: 0.5 }, dt, 5), 10, `rate, dt ${dt}`);
+    assert.strictEqual(run({ rate: 20, duration: 0.5, delay: 0.3 }, dt, 5), 10, `delayed rate, dt ${dt}`);
+    assert.strictEqual(run({ interval: 0.1, count: 1, duration: 0.35 }, dt, 5), 4, `pulses, dt ${dt}`);   // at 0, 0.1, 0.2 and 0.3
+    assert.strictEqual(run({ interval: 0.1, count: 1, duration: 0.3 }, dt, 5), 3, `a pulse due at the very end is not sent, dt ${dt}`);
+  }
+  const P = new X.Particles(100); P.kind('a', { draw(){} });
+  const first = P.emitter('a', { interval: 0.5, count: 1, speed: 0, life: 100 }); P.update(0.5); assert.strictEqual(P.count, 1);   // one pulse, not two, when dt is the interval
+  P.update(0.5); assert.strictEqual(P.count, 2); first.stop();
+  // onDone clears the system and starts the next emitter, with other emitters before and after it in the list
+  P.clear(); let next = null;
+  P.emitter('a', { rate: 0 }); P.emitter('a', { rate: 0 });
+  P.emitter('a', { rate: 10, duration: 0.1, life: 100, onDone(){ P.clear(); next = P.emitter('a', { rate: 10, speed: 0, life: 100 }); } });
+  P.emitter('a', { rate: 0 });
+  P.update(0.2); eq(P.emitters.length, 1); assert.strictEqual(P.emitters[0], next); assert.ok(!next.dead); assert.strictEqual(P.count, 0);
+  P.update(0.5); assert.strictEqual(P.count, 5);
+  // an emitter whose kind is defined before its first particle is fine, as in 0.3
+  const L = new X.Particles(10); L.emitter('late', { rate: 10, delay: 1, life: 100 }); L.update(0.5); L.kind('late', { draw(){} }); L.update(1); assert.strictEqual(L.count, 5);
+});
+
+test('Particles: curves run from birth whatever the jitter, tables of any size, and the smaller guards', () => {
+  const P = new X.Particles(500);
+  P.kind('c', { shape: 'circle', alpha: [0, 1, 1, 0] }); P.kind('own', { draw(){} });
+  P.burst('c', 0, 0, 200, { life: 0.5, speed: 0 }); for (let i = 0; i < 200; i++) assert.strictEqual(P.life[i], P.max[i]);   // every one starts at the start of its curve
+  let c = recCtx(); P.draw(c); assert.ok(c.log.every(d => d.a === 0));
+  P.clear(); P.burst('own', 0, 0, 50, { life: 0.5 }); for (let i = 0; i < 50; i++) near(P.max[i], 0.5);   // a kind with its own draw() keeps what 0.3 gave it
+  // tables made at another size
+  P.clear(); P.kind('t', { shape: 'circle', size: X.Particles.curve([1, 3], 16), alpha: X.Particles.curve([1, 0], 4), colors: X.Particles.ramp(['#000', '#fff'], 2) });
+  assert.strictEqual(P.kinds[P.kindId('t')]._ramp.length, 65);   // colours given to a kind are always made into its own table
+  P.spawn('t', 0, 0, 0, 0, 0.25, 1, '#fff', 10); c = recCtx(); P.draw(c); near(c.log[0].r, 25); near(c.log[0].a, 0.25); assert.strictEqual(c.log[0].fill, 'rgba(192,192,192,1)');
+  // outward with no area is a plain burst; a full circle by default
+  P.clear(); P.burst('own', 0, 0, 200, { outward: true, speed: 10 }); let left = 0; for (let i = 0; i < 200; i++) if (P.vx[i] < 0) left++; assert.ok(left > 50 && left < 150, left);
+  assert.throws(() => X.Particles.ramp([[0, '#f00'], '#00f']), /time/); assert.throws(() => X.Particles.rgba([1, 2]), /colour/);
+  assert.throws(() => P.kind('proto', { shape: 'constructor' }), /shape/); assert.throws(() => P.kind('proto', { shape: 'toString' }), /shape/);
+  assert.strictEqual(P.warm(1, 0), P); assert.strictEqual(P.warm(1, -1), P);   // returns instead of looping for ever
+  // clear() inside onDeath drops the hooks still waiting
+  const D = new X.Particles(50); let calls = 0; D.kind('d', { draw(){}, onDeath(s){ calls++; s.clear(); } });
+  for (let i = 0; i < 3; i++) D.spawn('d', 0, 0, 0, 0, 0.1); D.update(0.2); assert.strictEqual(calls, 1); assert.strictEqual(D.count, 0);
 });

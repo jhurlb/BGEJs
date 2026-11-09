@@ -41,11 +41,13 @@
      speed, angle (centre direction), spread (arc width, default a full circle), life, size, color, spin, rot,
      jitter (life and size vary by this fraction, default 0.3), vx / vy (added to every particle),
      radius (spawn in a disc), inner (with radius: spawn between the two, inner = radius is a circle's edge), box: [w, h] (spawn in a box),
-     outward: true (fly away from the centre of the disc or box; spread then widens each one's direction, default 0).
+     outward: true (with radius or box: fly away from its centre; spread then widens each one's direction, default 0).
+   A kind with a shape or curves runs each particle through the whole curve, however jitter changed its life.
 
    emitter() takes burst() options plus:
      rate (particles per second, default 20), or interval + count (`count` particles at once every `interval` seconds),
-     delay (seconds before it starts), duration (seconds of emitting, then it stops itself and calls onDone(emitter)),
+     delay (seconds before it starts), duration (seconds of emitting, then it stops itself and calls onDone(emitter));
+     both are exact at any frame rate, and time spent with on = false doesn't count towards them,
      inherit (share of the emitter's own velocity given to its particles, 0 by default), maxGap, x, y.
    Move it by setting x / y, or follow(obj, dx, dy) to track an object with x / y. emitter.opts is the live options object.
    An emitter that moves lays its particles along the path it travelled since the last update, so a fast trail
@@ -55,7 +57,7 @@
    EFFECTS: several bursts under one name.
      fx.effect('boom', [{ kind: 'flash', n: 1, speed: 0, size: 30 }, { kind: 'spark', n: 20, speed: [200, 500], life: 0.3 }]);
      fx.play('boom', x, y);                                  // or with { scale, count, angle, spread, color, vx, vy }
-   scale multiplies sizes, speeds and spawn areas; count multiplies how many (a layer of one stays one);
+   scale multiplies sizes, speeds and spawn areas; count multiplies how many (never below one a layer, unless count is 0);
    angle, spread and color replace each layer's own; vx / vy are added to every particle.
 
    A full system drops new particles (overflow: 'drop', the default) or recycles the oldest (overflow: 'replace'; finding the
@@ -77,8 +79,10 @@ class Particles {
   }
   kind(name, def){
     const k = { name, drag: 1, gravity: 0, wind: 0, cull: 24, blend: null, layer: 0, draw: null, ...def, id: this.kinds.length };
+    k._own = typeof k.draw !== 'function' || k.size !== undefined || k.alpha !== undefined || !!k.colors;   // drawn from curves: each particle's life runs the whole curve
     if (typeof k.draw !== 'function') {
-      k.draw = Particles.shapes[k.image ? 'image' : k.shape];
+      const shape = k.image ? 'image' : k.shape;
+      k.draw = Object.hasOwn(Particles.shapes, shape) ? Particles.shapes[shape] : null;
       if (typeof k.draw !== 'function') throw new Error(`Particles: kind "${name}" needs a draw(c, s, i, a) function or a shape (${Object.keys(Particles.shapes).join(', ')})`);
     }
     k._size = k.size === undefined ? null : Particles.curve(k.size); k._alpha = k.alpha === undefined ? null : Particles.curve(k.alpha);
@@ -114,7 +118,7 @@ class Particles {
     const R = Rng.fx;   // looks only: never shifts gameplay randomness
     const v = (q, d) => q === undefined ? d : typeof q === 'number' ? q : R.range(q[0], q[1]);
     const ang0 = (p && p.angle !== undefined ? p.angle : o.angle) ?? 0, color = (p && p.color) || o.color || '#fff';
-    const out = !!o.outward, spread = (p && p.spread) ?? o.spread ?? (out ? 0 : TAU), jit = o.jitter ?? 0.3, life = o.life ?? 0.5;
+    const out = !!o.outward && !!(o.box || o.radius), own = this.kinds[id]._own, spread = (p && p.spread) ?? o.spread ?? (out ? 0 : TAU), jit = o.jitter ?? 0.3, life = o.life ?? 0.5;
     const rad = (o.radius || 0) * sc, inn = Math.min(o.inner || 0, o.radius || 0) * sc, bw = o.box ? o.box[0] * sc : 0, bh = o.box ? o.box[1] * sc : 0;
     const bvx = (o.vx || 0) + ivx, bvy = (o.vy || 0) + ivy;
     for (let j = 0; j < n; j++) {
@@ -126,7 +130,7 @@ class Particles {
       const lf = v(o.life, life) * (1 + (R.float() * 2 - 1) * jit);
       const col = Array.isArray(color) ? R.pick(color) : color;
       if (this.spawn(id, x + ox, y + oy, Math.cos(a) * sp + bvx, Math.sin(a) * sp + bvy,
-        lf, typeof o.life === 'number' ? o.life : lf, col, v(o.size, 2) * sc * (1 + (R.float() * 2 - 1) * jit), o.rot === undefined ? R.angle() : v(o.rot, 0), v(o.spin, 0)) < 0) break;
+        lf, typeof o.life === 'number' && !own ? o.life : lf, col, v(o.size, 2) * sc * (1 + (R.float() * 2 - 1) * jit), o.rot === undefined ? R.angle() : v(o.rot, 0), v(o.spin, 0)) < 0) break;
     }
   }
   // A named effect: layers = [{ kind, n, ...burst options }, ...]. play() fires every layer at (x, y).
@@ -137,48 +141,51 @@ class Particles {
   play(name, x, y, p = null){
     const fxs = this.effects.get(name); if (!fxs) throw new Error(`Particles: unknown effect "${name}"`);
     const sc = (p && p.scale) ?? 1, cn = (p && p.count) ?? 1, ivx = (p && p.vx) || 0, ivy = (p && p.vy) || 0;
-    for (const l of fxs) this._emit(l.id, x, y, l.n === 1 ? 1 : Math.max(1, Math.round(l.n * cn)), l.opts, ivx, ivy, sc, p);
+    for (const l of fxs) this._emit(l.id, x, y, l.n > 0 && cn > 0 ? Math.max(1, Math.round(l.n * cn)) : 0, l.opts, ivx, ivy, sc, p);
   }
   // A continuous source of particles at (x, y). The options are listed at the top of this file.
   // Move it by setting x / y, or follow(obj, dx, dy) to track an object with x / y. on = false pauses it; stop() removes it.
   emitter(kind, o = {}){
     const e = { kind, x: o.x || 0, y: o.y || 0, rate: o.rate ?? 20, on: true, opts: o, acc: 0, target: null, dx: 0, dy: 0, dead: false, px: NaN, py: NaN, maxGap: o.maxGap ?? 200,
-      interval: o.interval ?? 0, count: o.count ?? 10, delay: o.delay ?? 0, duration: o.duration ?? Infinity, inherit: o.inherit ?? 0, onDone: o.onDone || null, age: 0,
+      interval: o.interval ?? 0, count: o.count ?? 10, delay: o.delay ?? 0, duration: o.duration ?? Infinity, inherit: o.inherit ?? 0, onDone: o.onDone || null, age: 0, pulse: 0,
       follow(obj, dx = 0, dy = 0){ e.target = obj; e.dx = dx; e.dy = dy; e.px = NaN; return e; },   // no trail from where it was before
       stop(){ e.dead = true; } };
-    if (e.interval > 0) e.acc = e.interval;   // the first pulse comes at once
     this.emitters.push(e);
     return e;
   }
+  // One emitter's share of an update. Only the part of dt after its delay and before the end of its duration emits,
+  // so the amount is the same at any frame rate. Returns true when its duration is over.
   _runEmitter(e, dt){
-    if (e.delay > 0) { e.delay -= dt; return; }
-    const id = this.kindId(e.kind), mx = e.x - e.px, my = e.y - e.py, m2 = mx * mx + my * my, moved = m2 <= e.maxGap * e.maxGap;   // NaN, the first time, fails the test
+    if (e.delay > 0) { e.delay -= dt; if (e.delay > 0) return false; dt = -e.delay; e.delay = 0; }
+    const left = e.duration - e.age, ending = dt >= left; if (ending) dt = Math.max(0, left);
+    const mx = e.x - e.px, my = e.y - e.py, m2 = mx * mx + my * my, moved = m2 <= e.maxGap * e.maxGap;   // NaN, the first time, fails the test
     const ivx = e.inherit && moved && dt > 0 ? mx / dt * e.inherit : 0, ivy = e.inherit && moved && dt > 0 ? my / dt * e.inherit : 0;
-    if (e.interval > 0) {
-      e.acc += dt;
-      while (e.acc >= e.interval) { e.acc -= e.interval; this._emit(id, e.x, e.y, e.count, e.opts, ivx, ivy, 1, null); }
+    if (e.interval > 0) {   // pulses at 0, interval, 2 x interval... of its emitting time: those in [age, age + dt)
+      const until = e.age + dt - 1e-9;
+      while (e.pulse < until) { e.pulse += e.interval; this._emit(this.kindId(e.kind), e.x, e.y, e.count, e.opts, ivx, ivy, 1, null); }
     } else {
-      e.acc += e.rate * dt; const n = e.acc | 0;
+      e.acc += e.rate * dt; const n = (e.acc + 1e-6) | 0;   // rounding must not hold back the last particle of a duration
       if (n) {
-        e.acc -= n;
+        e.acc -= n; const id = this.kindId(e.kind);
         if (n > 1 && m2 > 1 && moved) for (let j = 1; j <= n; j++) this._emit(id, e.px + mx * j / n, e.py + my * j / n, 1, e.opts, ivx, ivy, 1, null);   // spread along the move
         else this._emit(id, e.x, e.y, n, e.opts, ivx, ivy, 1, null);
       }
     }
     e.age += dt;
-    if (e.age >= e.duration) { e.dead = true; if (e.onDone) e.onDone(e); }
+    return ending;
   }
   update(dt){
     // emitters
-    let w = 0;
+    let w = 0, done = null;
     for (const e of this.emitters) {
       if (e.dead || (e.target && e.target.dead)) continue;
       if (e.target) { e.x = e.target.x + e.dx; e.y = e.target.y + e.dy; }
-      if (e.on) this._runEmitter(e, dt);
+      if (e.on && this._runEmitter(e, dt)) { e.dead = true; if (e.onDone) (done || (done = [])).push(e); continue; }
       e.px = e.x; e.py = e.y;
-      if (!e.dead) this.emitters[w++] = e;
+      this.emitters[w++] = e;
     }
     this.emitters.length = w;
+    if (done) for (const e of done) e.onDone(e);   // after the list is settled, so onDone may clear() or start new emitters
     // per-kind constants once per frame
     const K = this.kinds, kd = this._kd || (this._kd = new Float32Array(256)), kg = this._kg || (this._kg = new Float32Array(256)), kw = this._kw || (this._kw = new Float32Array(256));
     let hooks = false;
@@ -200,10 +207,12 @@ class Particles {
       i++;
     }
     // onDeath runs once the loop is over, so what it spawns starts moving next update and can't disturb the loop
-    for (let j = 0; j < nd; j += 5) { const kn = K[dead[j]]; if (kn.onDeath) kn.onDeath(this, dead[j + 1], dead[j + 2], dead[j + 3], dead[j + 4]); }
+    this._deaths = nd;   // clear() inside a hook sets this to 0, which drops the rest
+    for (let j = 0; j < this._deaths; j += 5) { const kn = K[dead[j]]; if (kn.onDeath) kn.onDeath(this, dead[j + 1], dead[j + 2], dead[j + 3], dead[j + 4]); }
+    this._deaths = 0;
   }
   // Run the system ahead by `seconds` in steps of `step`.
-  warm(seconds, step = 1 / 30){ for (let t = 0; t < seconds - 1e-9; t += step) this.update(Math.min(step, seconds - t)); return this; }
+  warm(seconds, step = 1 / 30){ if (!(step > 0)) return this; for (let t = 0; t < seconds - 1e-9; t += step) this.update(Math.min(step, seconds - t)); return this; }
   // Remove particle i: the last particle moves into its slot and takes over its place in the age order.
   _kill(i){
     this._unlink(i);
@@ -252,7 +261,8 @@ Particles.curve = (spec, n = 64) => {
 // Colour stops -> an array of n + 1 CSS colours. Mixed with alpha taken into account, so fading to a clear colour doesn't pass through grey.
 Particles.ramp = (colors, n = 64) => {
   if (!Array.isArray(colors) || !colors.length) throw new Error('Particles.ramp: give an array of colours');
-  const timed = colors.every(s => Array.isArray(s) && s.length === 2 && typeof s[0] === 'number' && typeof s[1] !== 'number');
+  const isTimed = s => Array.isArray(s) && s.length === 2 && typeof s[0] === 'number' && typeof s[1] !== 'number', timed = isTimed(colors[0]);
+  if (colors.some(s => isTimed(s) !== timed)) throw new Error('Particles.ramp: give every colour a time, or none');
   const stops = colors.map((s, j) => timed ? [s[0], Particles.rgba(s[1])] : [colors.length > 1 ? j / (colors.length - 1) : 0, Particles.rgba(s)]);
   return Particles._lut(stops, n, (A, B, f) => {
     const a = lerp(A[3], B[3], f); if (a <= 0) return 'rgba(0,0,0,0)';
@@ -264,7 +274,7 @@ Particles.ramp = (colors, n = 64) => {
 Particles.at = (lut, t) => lut[t <= 0 ? 0 : t >= 1 ? lut.length - 1 : (t * (lut.length - 1) + 0.5) | 0];
 // A CSS colour -> [r, g, b, a] (0-255, alpha 0-1). Hex and rgb() / rgba() are read here; other forms (names, hsl()) need a browser.
 Particles.rgba = col => {
-  if (Array.isArray(col)) return col;
+  if (Array.isArray(col)) { if (col.length === 4 && col.every(v => typeof v === 'number' && v === v)) return col; throw new Error(`Particles: can't read the colour [${col}]`); }
   const s = String(col).trim(); let m;
   if ((m = /^#([0-9a-f]{3,4}|[0-9a-f]{6}|[0-9a-f]{8})$/i.exec(s))) {
     const h = m[1].length < 5 ? m[1].replace(/./g, '$&$&') : m[1], b = j => parseInt(h.slice(j, j + 2), 16);
@@ -281,11 +291,11 @@ Particles.rgba = col => {
 // ---- built-in shapes: the draw() of a kind made with `shape` or `image` (`this` is the kind) ----
 // Sets opacity and colour for particle i and returns its size now.
 Particles._style = (k, c, s, i, a, stroke) => {
-  const q = ((1 - a) * 64 + 0.5) | 0;
-  c.globalAlpha = k._alpha ? k._alpha[q] : a;
-  const col = k._ramp ? k._ramp[q] : s.color[i];
+  const t = 1 - a, at = Particles.at;   // each table by its own length: one made with Particles.curve(spec, n) may be any size
+  c.globalAlpha = k._alpha ? at(k._alpha, t) : a;
+  const col = k._ramp ? at(k._ramp, t) : s.color[i];
   if (stroke) c.strokeStyle = col; else c.fillStyle = col;
-  return k._size ? s.size[i] * k._size[q] : s.size[i];
+  return k._size ? s.size[i] * at(k._size, t) : s.size[i];
 };
 Particles.shapes = {
   circle(c, s, i, a){ const r = Particles._style(this, c, s, i, a, false); if (r <= 0) return; c.beginPath(); c.arc(s.x[i], s.y[i], r, 0, TAU); c.fill(); },
