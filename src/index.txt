@@ -18,6 +18,8 @@ audio.js
 music.js
 assets.js
 sprites.js
+tilemap.js
+text.js
 look.js
 profiler.js
 net.js
