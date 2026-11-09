@@ -18,6 +18,8 @@
      fx.update(dt);  fx.draw(ctx, view);                 // view: { x0, y0, x1, y1 } to skip off-screen particles
 
    A full system drops new particles (overflow: 'drop', the default) or recycles the oldest (overflow: 'replace').
+   An emitter that moves lays its particles along the path it travelled since the last update, so a fast trail
+   stays an even line instead of a clump per frame.
    Particles.basic(fx) adds ready-made kinds: 'dot', 'spark', 'smoke', 'chip' and 'glow'.
    ================================================================ */
 class Particles {
@@ -30,6 +32,7 @@ class Particles {
   }
   kind(name, def){
     const k = { name, drag: 1, gravity: 0, cull: 24, blend: null, draw: null, ...def, id: this.kinds.length };
+    if (typeof k.draw !== 'function') throw new Error(`Particles: kind "${name}" needs a draw(c, s, i, a) function`);
     if (this.ids.has(name)) { k.id = this.ids.get(name); this.kinds[k.id] = k; return k.id; }
     if (k.id > 255) throw new Error('Particles: at most 256 kinds');
     this.kinds.push(k); this.ids.set(name, k.id); return k.id;
@@ -37,7 +40,7 @@ class Particles {
   kindId(kind){ if (typeof kind === 'number') return kind; const id = this.ids.get(kind); if (id === undefined) throw new Error(`Particles: unknown kind "${kind}"`); return id; }
   get count(){ return this.n; }
   get full(){ return this.n >= this.cap; }
-  clear(){ this.n = 0; this.emitters.length = 0; }
+  clear(){ this.n = 0; for (const e of this.emitters) e.dead = true; this.emitters.length = 0; }
   _slot(){
     if (this.n < this.cap) return this.n++;
     if (this.overflow !== 'replace') return -1;
@@ -46,8 +49,9 @@ class Particles {
     return o;
   }
   spawn(kind, x, y, vx, vy, life, max = life, color = '#fff', size = 2, rot = 0, spin = 0){
+    const id = this.kindId(kind);   // before taking a slot, so an unknown kind throws without leaving a half-made particle
     const i = this._slot(); if (i < 0) return -1;
-    this.k[i] = this.kindId(kind); this.x[i] = x; this.y[i] = y; this.vx[i] = vx; this.vy[i] = vy;
+    this.k[i] = id; this.x[i] = x; this.y[i] = y; this.vx[i] = vx; this.vy[i] = vy;
     this.life[i] = life; this.max[i] = max > 0 ? max : life || 1; this.color[i] = color; this.size[i] = size; this.rot[i] = rot; this.spin[i] = spin;
     this.born[i] = this.serial++;
     return i;
@@ -71,8 +75,8 @@ class Particles {
   // A continuous source: `rate` particles per second at (x, y), using burst() options. Move it by setting x / y,
   // or follow(obj, dx, dy) to track an object with x / y. on = false pauses it; stop() removes it.
   emitter(kind, o = {}){
-    const e = { kind, x: o.x || 0, y: o.y || 0, rate: o.rate ?? 20, on: true, opts: o, acc: 0, target: null, dx: 0, dy: 0, dead: false,
-      follow(obj, dx = 0, dy = 0){ e.target = obj; e.dx = dx; e.dy = dy; return e; },
+    const e = { kind, x: o.x || 0, y: o.y || 0, rate: o.rate ?? 20, on: true, opts: o, acc: 0, target: null, dx: 0, dy: 0, dead: false, px: NaN, py: NaN,
+      follow(obj, dx = 0, dy = 0){ e.target = obj; e.dx = dx; e.dy = dy; e.px = NaN; return e; },   // no trail from where it was before
       stop(){ e.dead = true; } };
     this.emitters.push(e);
     return e;
@@ -83,7 +87,16 @@ class Particles {
     for (const e of this.emitters) {
       if (e.dead || (e.target && e.target.dead)) continue;
       if (e.target) { e.x = e.target.x + e.dx; e.y = e.target.y + e.dy; }
-      if (e.on) { e.acc += e.rate * dt; const n = e.acc | 0; if (n) { e.acc -= n; this.burst(e.kind, e.x, e.y, n, e.opts); } }
+      if (e.on) {
+        e.acc += e.rate * dt; const n = e.acc | 0;
+        if (n) {
+          e.acc -= n;
+          const mx = e.x - e.px, my = e.y - e.py;
+          if (n > 1 && mx * mx + my * my > 1) for (let j = 1; j <= n; j++) this.burst(e.kind, e.px + mx * j / n, e.py + my * j / n, 1, e.opts);   // spread along the move (NaN, the first time, fails the test)
+          else this.burst(e.kind, e.x, e.y, n, e.opts);
+        }
+      }
+      e.px = e.x; e.py = e.y;
       this.emitters[w++] = e;
     }
     this.emitters.length = w;

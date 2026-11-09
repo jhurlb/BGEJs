@@ -13,8 +13,9 @@ const Scenes = {
   add(name, def){ this.defs.set(name, { name, ...def }); return this; },
   get current(){ const s = this.stack[this.stack.length - 1]; return s ? s.name : null; },
   _get(name){ const d = this.defs.get(name); if (!d) throw new Error(`Scenes: unknown scene "${name}"`); return d; },
-  go(name, args){ while (this.stack.length) this.stack.pop().exit?.(); const d = this._get(name); this.stack.push(d); d.enter?.(args); },
-  push(name, args){ const top = this.stack[this.stack.length - 1]; top?.pause?.(); const d = this._get(name); this.stack.push(d); d.enter?.(args); },
+  // The name is checked first, so a typo throws before any scene has been exited or paused.
+  go(name, args){ const d = this._get(name); while (this.stack.length) this.stack.pop().exit?.(); this.stack.push(d); d.enter?.(args); },
+  push(name, args){ const d = this._get(name); this.stack[this.stack.length - 1]?.pause?.(); this.stack.push(d); d.enter?.(args); },
   pop(){ const d = this.stack.pop(); d?.exit?.(); this.stack[this.stack.length - 1]?.resume?.(); return d; },
   update(dt){ const top = this.stack[this.stack.length - 1]; top?.update?.(dt); },
   render(c){

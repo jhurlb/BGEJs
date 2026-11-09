@@ -2,7 +2,7 @@
 /* Orb Sweep: a small example built only on BGEjs.
    Drive with WASD / arrows / left stick / touch drag. Space, click or A sends out a pulse that pops nearby orbs.
    Big orbs split. An orb that touches you costs a life. F3 toggles the profiler.
-   Shows: Loop, Scenes, Camera, Input actions, the ECS, Particles + an emitter, SpatialHash, Collide, Clock tweens,
+   Shows: Loop (with autoInput), Scenes, Camera, Input actions, the ECS, Particles + an emitter, SpatialHash, Collide, Clock tweens,
    Sound recipes, Store, Events and Rng. */
 VIEW.ref = 700; resize();
 const save = new Store('orbsweep');
@@ -17,6 +17,7 @@ Input.bind('up', ['key:w', 'key:arrowup']); Input.bind('down', ['key:s', 'key:ar
 Input.bind('left', ['key:a', 'key:arrowleft']); Input.bind('right', ['key:d', 'key:arrowright']);
 Input.bind('pulse', ['key: ', 'pad:0', 'mouse:0']); Input.bind('start', ['key:enter', 'key: ', 'pad:0', 'pad:9', 'mouse:0']);
 Input.stickOn(cv, () => Scenes.current === 'play');
+Input.block(['key: ', 'key:arrowup', 'key:arrowdown', 'key:arrowleft', 'key:arrowright']);   // no page scrolling when embedded
 addEventListener('keydown', e => { if (e.key === 'F3') { Profiler.on = !Profiler.on; e.preventDefault(); } });
 Sound.unlockOnGesture();
 Sound.define('pulse', S => { S.tone('sine', 300, 900, 0.18, 0.2); S.noise(0.2, 'highpass', 2000, 0.08); }, 0.05);
@@ -31,7 +32,8 @@ system('play', 'orbs move', (w, dt) => w.each(['Pos', 'Vel', 'Orb'], (id, p, v, 
 system('play', 'orbs vs ship', w => {
   hash.clear(); for (const o of w.list('Orb')) hash.insert(o);
   if (ship.inv > 0) return;
-  for (const o of hash.query(ship.x, ship.y, 80)) if (Collide.circles(ship.x, ship.y, ship.r, o.x, o.y, o.r)) { Events.emit('shipHit', o); break; }
+  const o = hash.within(ship.x, ship.y, ship.r)[0];   // exact: allows for each orb's own radius
+  if (o) Events.emit('shipHit', o);
 }, 20);
 function spawnOrb(x, y, r, vx, vy){
   const o = { x, y, r, id: 0, hue: Rng.main.int(160, 320), dead: false };
@@ -50,7 +52,7 @@ function pulse(){
   if (pulseCd > 0) return; pulseCd = 0.6;
   const R = 170; Sound.play('pulse'); cam.addTrauma(0.25);
   fx.burst('dot', ship.x, ship.y, 40, { speed: R * 2.4, life: 0.35, size: 3, color: '#7cf', jitter: 0.1 });
-  for (const o of hash.query(ship.x, ship.y, R + 60, [])) if (!o.dead && Collide.circles(ship.x, ship.y, R, o.x, o.y, o.r)) popOrb(o);
+  for (const o of hash.within(ship.x, ship.y, R, [])) popOrb(o);   // its own array: popOrb spawns, and the shared one may be reused
 }
 Events.on('shipHit', o => {
   lives--; ship.inv = 1.5; cam.addTrauma(0.8); Loop.hitstop(0.12); Sound.play('hurt');
@@ -131,7 +133,8 @@ function text(c, s, y, size, col){ cam.applyScreen(c); c.font = `800 ${size}px s
 
 Scenes.go('title');
 Loop.start({
+  autoInput: true,   // the loop reads the gamepad and clears "pressed this frame" itself
   update(dt){ Scenes.update(dt); },
-  render(){ ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.fillStyle = '#05070a'; ctx.fillRect(0, 0, cv.width, cv.height); Scenes.render(ctx); Profiler.count('particles', fx.count); Profiler.count('orbs', world.count('Orb')); Profiler.draw(ctx); Profiler.frame(); Input.endFrame(); },
+  render(){ ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.fillStyle = '#05070a'; ctx.fillRect(0, 0, cv.width, cv.height); Scenes.render(ctx); Profiler.count('particles', fx.count); Profiler.count('orbs', world.count('Orb')); Profiler.draw(ctx); Profiler.frame(); },
 });
 window.__orb = { get world(){ return world; }, get ship(){ return ship; }, get score(){ return score; }, get lives(){ return lives; }, pulse, spawnOrb, popOrb };

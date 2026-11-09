@@ -1,5 +1,5 @@
 'use strict';
-/* BGEjs 0.2.1: a small browser game engine. Built from src/ by scripts/bundle.js; edit src/, not this file. */
+/* BGEjs 0.3.0: a small browser game engine. Built from src/ by scripts/bundle.js; edit src/, not this file. */
 
 /* ---- src/core.js ---- */
 /* ================================================================
@@ -101,24 +101,31 @@ const shuffle = a => Rng.main.shuffle(a);
    EVENTS: a tiny publish / subscribe bus so systems can react to each other without calling each other.
      const off = Events.on('kill', e => score += e.points);   // returns an unsubscribe function
      Events.once('bossDown', fn);  Events.emit('kill', { points: 10 });  off();
-   new Bus() makes a separate bus (one per match, say). Handlers run in the order they were added.
+     Events.off('bossDown', fn);   // works for on() and once() handlers alike
+   new Bus() makes a separate bus (one per match, say). Handlers run in the order they were added, and get up to
+   three arguments: emit('hit', target, damage). A handler added or removed during an emit takes effect from the
+   next emit. emit() allocates nothing.
    ================================================================ */
 class Bus {
   constructor(){ this.map = new Map(); }
+  // Subscribing and unsubscribing replace the handler array instead of changing it, so an emit that is running
+  // keeps walking the array it started with and emit() never has to copy.
   on(name, fn){
-    let l = this.map.get(name); if (!l) this.map.set(name, l = []);
-    l.push(fn);
+    const l = this.map.get(name);
+    this.map.set(name, l ? l.concat(fn) : [fn]);
     return () => this.off(name, fn);
   }
-  once(name, fn){ const off = this.on(name, (...a) => { off(); fn(...a); }); return off; }
+  once(name, fn){ const w = (a, b, c) => { this.off(name, w); fn(a, b, c); }; w.fn = fn; return this.on(name, w); }
   off(name, fn){
     const l = this.map.get(name); if (!l) return;
-    const i = l.indexOf(fn); if (i >= 0) l.splice(i, 1);
+    const i = l.findIndex(h => h === fn || h.fn === fn); if (i < 0) return;
+    if (l.length === 1) this.map.delete(name); else { const n = l.slice(); n.splice(i, 1); this.map.set(name, n); }
   }
-  emit(name, data){
-    const l = this.map.get(name); if (!l || !l.length) return;
-    for (const fn of l.slice()) fn(data);   // a copy, so handlers can unsubscribe while running
+  emit(name, a, b, c){
+    const l = this.map.get(name); if (!l) return;
+    for (let i = 0; i < l.length; i++) l[i](a, b, c);
   }
+  count(name){ const l = this.map.get(name); return l ? l.length : 0; }
   clear(name){ if (name) this.map.delete(name); else this.map.clear(); }
 }
 const Events = new Bus();
@@ -137,7 +144,9 @@ addEventListener('resize', () => Events.emit('resize', { vw, vh, dpr }));   // a
      system('update', 'motion', (w, dt) => { ... }, 10);   // lower order runs first
      runSystems('update', G.world, dt);
 
-   Destroying is deferred until the phase finishes (safe mid-loop); kill() removes at once.
+   Destroying is deferred until the phase finishes (safe mid-loop); kill() removes at once. exists(id) tells whether
+   an entity is still there; add() on one that is gone does nothing (and returns undefined), so a late effect can't
+   leave a component behind with no entity. clear() empties the world.
    Iteration follows spawn order, so things drawn by a system keep the order they were made in. list(name) gives
    one component kind as a cached array.
    Common components, with systems in the 'update' phase from ecsBasics(): Pos {x, y} · Vel {x, y} (moves Pos) ·
@@ -148,7 +157,9 @@ class World {
   constructor(){ this.nextId = 1; this.stores = new Map(); this.alive = new Set(); this.dead = []; this.lists = new Map(); this.stale = new Set(); }
   store(name){ let s = this.stores.get(name); if (!s) this.stores.set(name, s = new Map()); return s; }
   spawn(comps){ const id = this.nextId++; this.alive.add(id); for (const k in comps) { this.store(k).set(id, comps[k]); this.stale.add(k); } return id; }
-  add(id, name, data){ this.store(name).set(id, data); this.stale.add(name); return data; }
+  add(id, name, data){ if (!this.alive.has(id)) return undefined; this.store(name).set(id, data); this.stale.add(name); return data; }
+  exists(id){ return this.alive.has(id); }
+  get size(){ return this.alive.size; }   // live entities
   get(id, name){ const s = this.stores.get(name); return s && s.get(id); }
   has(id, name){ const s = this.stores.get(name); return !!s && s.has(id); }
   remove(id, name){ const s = this.stores.get(name); if (s && s.delete(id)) this.stale.add(name); }
@@ -163,6 +174,7 @@ class World {
     return l;
   }
   flush(){ for (const id of this.dead) this.kill(id); this.dead.length = 0; }
+  clear(){ for (const [k, s] of this.stores) if (s.size) { s.clear(); this.stale.add(k); } this.alive.clear(); this.dead.length = 0; }
   // Calls fn(id, ...components) for every entity that has all the named components (walks the smallest store).
   // One- and two-component queries (nearly all of them) skip the argument array and the spread.
   each(names, fn){
@@ -216,14 +228,22 @@ function ecsBasics(phase = 'update'){
      Loop.paused = true;        // render keeps running, update stops
    With a fixed step, update(dt) runs zero or more times per frame at exactly `step`, and render gets
    alpha (0..1) for interpolating between the last two updates. Loop.time is simulated seconds,
-   Loop.realTime is wall seconds since start. Loop.fps is a smoothed frame rate.
+   Loop.realTime is wall seconds since start. Loop.fps is a smoothed frame rate. Loop.updates is how many times
+   update ran in the current frame.
    While the tab is hidden the browser stops animation frames; set keepAliveHidden to keep updating on a timer
    (a network host needs this).
+
+   autoInput: true lets the loop look after engine/input.js, so you never call Input.pollPad() or Input.endFrame():
+   the gamepad is read once per frame and "pressed this frame" (Input.hit, pressed, padHit, wheel) is cleared after
+   each update. A press is then seen by exactly one update, even with a fixed step on a fast display (where some
+   frames run no update, and clearing in render would lose the press) or during a hitstop (the press waits for the
+   next update). While Loop.paused the presses are cleared after render instead, so a pause menu driven from render
+   still sees each press once.
    ================================================================ */
 const Loop = {
   update: null, render: null, step: null, maxDt: 1 / 30, maxSteps: 8,
-  timeScale: 1, paused: false, keepAliveHidden: false,
-  time: 0, realTime: 0, frame: 0, fps: 60, running: false,
+  timeScale: 1, paused: false, keepAliveHidden: false, autoInput: false,
+  time: 0, realTime: 0, frame: 0, fps: 60, running: false, updates: 0,
   _acc: 0, _last: 0, _stop: 0, _raf: 0, _timer: 0,
   start(opts = {}){
     Object.assign(this, opts);
@@ -241,26 +261,30 @@ const Loop = {
   get frozen(){ return this._stop > 0; },
   _tick(ts, hidden = false){
     const raw = Math.max(0, (ts - this._last) / 1000); this._last = ts;
-    this.realTime += raw; this.frame++;
+    this.realTime += raw; this.frame++; this.updates = 0;
     if (raw > 0) this.fps += (1 / raw - this.fps) * 0.05;
+    const auto = this.autoInput && typeof Input !== 'undefined';
+    if (auto) Input.pollPad(true);
     let dt = hidden ? Math.min(raw, 1.5) : Math.min(raw, this.maxDt);
     if (!this.paused && this.update) {
-      if (this._stop > 0) { this._stop -= dt; dt = 0; }
+      if (this._stop > 0) { const s = Math.min(this._stop, dt); this._stop -= s; dt -= s; }   // only the frozen part of the frame is lost
       dt *= this.timeScale;
       if (dt > 0) {
         if (this.step) {
-          this._acc += dt; let n = 0;
-          while (this._acc >= this.step && n < (hidden ? 1e4 : this.maxSteps)) { this.update(this.step); this.time += this.step; this._acc -= this.step; n++; }
-          if (n >= this.maxSteps && !hidden) this._acc = 0;   // spiral of death guard
+          this._acc += dt; const max = hidden ? 1e4 : this.maxSteps;
+          while (this._acc >= this.step && this.updates < max) { this._acc -= this.step; this._step(this.step, auto); }
+          if (this._acc >= this.step) this._acc = 0;   // spiral of death guard: drop time the machine can't keep up with
         } else {
           // variable step, split so no single update is longer than maxDt (keeps physics stable in slow tabs and fast-forward)
           const n = Math.ceil(dt / this.maxDt - 1e-9);
-          for (let i = 0; i < n; i++) { this.update(dt / n); this.time += dt / n; }
+          for (let i = 0; i < n; i++) this._step(dt / n, auto);
         }
       }
     }
     if (!hidden && this.render) this.render(raw, this.step ? this._acc / this.step : 1);
+    if (auto && (this.paused || !this.update)) Input.endFrame(true);
   },
+  _step(dt, auto){ this.update(dt); this.time += dt; this.updates++; if (auto) Input.endFrame(true); },
 };
 
 
@@ -274,19 +298,27 @@ const Loop = {
      clock.update(dt);                      // call once per update
    tween() animates numeric properties from their current values. It returns a handle with cancel() and then(fn).
    Tweening the same property of the same object again replaces the old tween on that property.
+   Handles can be awaited: `await clock.after(1); await clock.tween(o, { x: 9 }, 0.3);` (a cancelled one never resolves).
+   every() keeps its rate when the interval is shorter than a frame: it fires as many times as fit in the update.
+   Ease has linear and in / out / inOut versions of Quad, Cubic, Sine, Expo and Back, plus outElastic and outBounce.
    ================================================================ */
 const Ease = {
   linear: t => t,
   inQuad: t => t * t, outQuad: t => t * (2 - t), inOutQuad: t => t < 0.5 ? 2 * t * t : -1 + (4 - 2 * t) * t,
   inCubic: t => t * t * t, outCubic: t => 1 - (1 - t) ** 3, inOutCubic: t => t < 0.5 ? 4 * t * t * t : 1 - (-2 * t + 2) ** 3 / 2,
+  inSine: t => 1 - Math.cos(t * Math.PI / 2), outSine: t => Math.sin(t * Math.PI / 2), inOutSine: t => (1 - Math.cos(t * Math.PI)) / 2,
+  inBack: t => { const c = 1.70158; return (c + 1) * t * t * t - c * t * t; },
   outBack: t => { const c = 1.70158; return 1 + (c + 1) * (t - 1) ** 3 + c * (t - 1) ** 2; },
+  inOutBack: t => { const c = 1.70158 * 1.525; return t < 0.5 ? (2 * t) ** 2 * ((c + 1) * 2 * t - c) / 2 : ((2 * t - 2) ** 2 * ((c + 1) * (2 * t - 2) + c) + 2) / 2; },
   outElastic: t => t === 0 || t === 1 ? t : 2 ** (-10 * t) * Math.sin((t * 10 - 0.75) * (2 * Math.PI / 3)) + 1,
   outBounce: t => { const n = 7.5625, d = 2.75; if (t < 1 / d) return n * t * t; if (t < 2 / d) return n * (t -= 1.5 / d) * t + 0.75; if (t < 2.5 / d) return n * (t -= 2.25 / d) * t + 0.9375; return n * (t -= 2.625 / d) * t + 0.984375; },
   inExpo: t => t === 0 ? 0 : 2 ** (10 * t - 10), outExpo: t => t === 1 ? 1 : 1 - 2 ** (-10 * t),
+  inOutExpo: t => t === 0 || t === 1 ? t : t < 0.5 ? 2 ** (20 * t - 10) / 2 : (2 - 2 ** (-20 * t + 10)) / 2,
 };
 class Clock {
   constructor(){ this.t = 0; this.items = []; this.tweens = new Map(); }
-  _add(it){ it.cancel = () => { it.dead = true; }; it.then = fn => { it.done = fn; return it; }; this.items.push(it); return it; }
+  _add(it){ it.cancel = () => { it.dead = true; }; it.then = fn => { if (it.ended) fn(); else it.done = fn; return it; }; this.items.push(it); return it; }   // then() after the end still runs fn
+  _end(it){ it.dead = it.ended = true; it.done && it.done(); }
   after(sec, fn){ return this._add({ at: this.t + sec, fn }); }
   every(sec, fn, times = Infinity){ return this._add({ at: this.t + sec, fn, every: sec, left: times }); }
   tween(obj, props, dur, ease = Ease.outQuad, delay = 0){
@@ -297,6 +329,12 @@ class Clock {
     return it;
   }
   cancelAll(obj){ for (const it of this.items) if (!obj || it.obj === obj) it.dead = true; if (obj) this.tweens.delete(obj); else this.tweens.clear(); }
+  // Forget a finished tween. The per-object entry goes too once it is empty, so tweened objects can be collected.
+  _drop(it){
+    const m = this.tweens.get(it.obj); if (!m) return;
+    let left = false; for (const p in m) { if (m[p] === it) delete m[p]; else left = true; }
+    if (!left) this.tweens.delete(it.obj);
+  }
   get count(){ return this.items.length; }
   update(dt){
     this.t += dt;
@@ -309,15 +347,21 @@ class Clock {
             const k = Math.min(1, (this.t - it.start) / it.dur), e = it.ease(k);
             if (!it.started) { for (const p in it.to) it.from[p] = it.obj[p]; it.started = true; }   // start values are read when the tween starts, not when it is made
             for (const p in it.to) it.obj[p] = it.from[p] + (it.to[p] - it.from[p]) * e;
-            if (k >= 1) { it.dead = true; it.done && it.done(); }
+            if (k >= 1) this._end(it);
           }
-        } else if (this.t >= it.at) {
-          it.fn();
-          if (it.every && --it.left > 0) it.at += it.every; else { it.dead = true; it.done && it.done(); }
+        } else if (it.every === undefined) {
+          if (this.t >= it.at) { it.fn && it.fn(); this._end(it); }
+        } else {
+          // catch up when the interval is shorter than the update; a zero interval fires once per update
+          while (!it.dead && this.t >= it.at) {
+            it.fn();
+            if (it.dead) break;   // cancelled from inside its own callback
+            if (--it.left > 0) { it.at += it.every; if (!(it.every > 0)) break; } else this._end(it);
+          }
         }
       }
       if (!it.dead) list[w++] = it;
-      else if (it.tween) { const m = this.tweens.get(it.obj); if (m) { for (const p in m) if (m[p] === it) delete m[p]; } }
+      else if (it.tween) this._drop(it);
     }
     list.length = w;
   }
@@ -340,8 +384,9 @@ const Scenes = {
   add(name, def){ this.defs.set(name, { name, ...def }); return this; },
   get current(){ const s = this.stack[this.stack.length - 1]; return s ? s.name : null; },
   _get(name){ const d = this.defs.get(name); if (!d) throw new Error(`Scenes: unknown scene "${name}"`); return d; },
-  go(name, args){ while (this.stack.length) this.stack.pop().exit?.(); const d = this._get(name); this.stack.push(d); d.enter?.(args); },
-  push(name, args){ const top = this.stack[this.stack.length - 1]; top?.pause?.(); const d = this._get(name); this.stack.push(d); d.enter?.(args); },
+  // The name is checked first, so a typo throws before any scene has been exited or paused.
+  go(name, args){ const d = this._get(name); while (this.stack.length) this.stack.pop().exit?.(); this.stack.push(d); d.enter?.(args); },
+  push(name, args){ const d = this._get(name); this.stack[this.stack.length - 1]?.pause?.(); this.stack.push(d); d.enter?.(args); },
   pop(){ const d = this.stack.pop(); d?.exit?.(); this.stack[this.stack.length - 1]?.resume?.(); return d; },
   update(dt){ const top = this.stack[this.stack.length - 1]; top?.update?.(dt); },
   render(c){
@@ -370,21 +415,40 @@ class Pool {
 /* ---- src/store.js ---- */
 /* ================================================================
    SAVED DATA in localStorage, namespaced per game, with versions and migrations. Never throws:
-   a private window or blocked storage just means nothing is kept.
+   in a private window or with storage blocked or full, values are kept in memory for the session instead
+   (so a settings screen still works), and store.persistent turns false.
      const save = new Store('mygame');
      save.get('settings', { vol: 0.8 });    // the default comes back when nothing is saved or it can't be read
      save.set('settings', { vol: 0.5 });  save.remove('settings');
+     save.update('stats', s => { s.runs++; return s; }, { runs: 0 });   // read, change, write
+     save.keys();  save.clear();            // only this namespace
      save.migrate(2, { 2: data => { ... } });   // runs each step above the saved version once, in order
-   Values are JSON. Keys are stored as `${ns}.${key}`.
+   Values are JSON. Keys are stored as `${ns}.${key}`. set() returns false when the value could not be written to disk.
    ================================================================ */
 class Store {
-  constructor(ns){ this.ns = ns; }
+  constructor(ns){ this.ns = ns; this.mem = new Map(); this.persistent = true; }
   _k(key){ return this.ns ? `${this.ns}.${key}` : key; }
   get(key, def = null){
-    try { const s = localStorage.getItem(this._k(key)); return s === null ? def : JSON.parse(s); } catch (e) { return def; }
+    const k = this._k(key);
+    if (this.mem.has(k)) { try { return JSON.parse(this.mem.get(k)); } catch (e) { return def; } }
+    try { const s = localStorage.getItem(k); return s === null ? def : JSON.parse(s); } catch (e) { return def; }
   }
-  set(key, v){ try { localStorage.setItem(this._k(key), JSON.stringify(v)); return true; } catch (e) { return false; } }
-  remove(key){ try { localStorage.removeItem(this._k(key)); } catch (e) {} }
+  set(key, v){
+    const k = this._k(key); let s;
+    try { s = JSON.stringify(v); } catch (e) { return false; }   // a cycle or a BigInt
+    if (s === undefined) return false;
+    try { localStorage.setItem(k, s); this.mem.delete(k); return true; } catch (e) { this.mem.set(k, s); this.persistent = false; return false; }
+  }
+  update(key, fn, def = null){ const v = fn(this.get(key, def)); this.set(key, v); return v; }
+  remove(key){ const k = this._k(key); this.mem.delete(k); try { localStorage.removeItem(k); } catch (e) {} }
+  // The keys saved under this namespace (without the prefix).
+  keys(){
+    const pre = this.ns ? `${this.ns}.` : '', out = new Set();
+    for (const k of this.mem.keys()) out.add(k.slice(pre.length));
+    try { for (let i = 0; i < localStorage.length; i++) { const k = localStorage.key(i); if (k !== null && k.startsWith(pre)) out.add(k.slice(pre.length)); } } catch (e) {}
+    return [...out];
+  }
+  clear(){ for (const k of this.keys()) this.remove(k); }
   // steps: { [version]: fn(store) }. Each runs once, lowest first, for versions above the saved one.
   migrate(version, steps = {}){
     const at = this.get('__version', 0);
@@ -396,8 +460,11 @@ class Store {
 
 /* ---- src/collide.js ---- */
 /* ================================================================
-   COLLISION HELPERS for circles, axis-aligned boxes and segments. Plain functions, no allocation
-   unless noted. Boxes are { x, y, w, h } with x, y the top-left corner.
+   COLLISION HELPERS for circles, axis-aligned boxes, segments, rays and polygons. Plain functions, no allocation.
+   Boxes are { x, y, w, h } with x, y the top-left corner. Rays take a unit direction and return the distance to
+   the first hit, or -1. Functions that find a surface (rayBox, pushOutOfBox) leave its normal in Collide.nx / ny,
+   which you can hand to Collide.bounce(vel, restitution) to reflect a velocity { vx, vy } off it:
+     if (Collide.pushOutOfBox(ball, wall)) Collide.bounce(ball, 0.8);   // ball: { x, y, r, vx, vy }
    ================================================================ */
 const Collide = {
   circles(ax, ay, ar, bx, by, br){ const r = ar + br; return dist2(ax, ay, bx, by) < r * r; },
@@ -415,6 +482,24 @@ const Collide = {
     const disc = b * b - c; if (disc < 0) return -1;
     const t = -b - Math.sqrt(disc); return t < 0 ? 0 : t;
   },
+  // Ray against a box (slab test). Starting inside gives 0. Collide.nx / ny get the normal of the face it entered by.
+  rayBox(ox, oy, dx, dy, b){
+    let t0 = 0, t1 = Infinity, nx = 0, ny = 0;
+    if (dx) { const i = 1 / dx; let a = (b.x - ox) * i, c = (b.x + b.w - ox) * i, s = -1; if (a > c) { const t = a; a = c; c = t; s = 1; } if (a > t0) { t0 = a; nx = s; ny = 0; } if (c < t1) t1 = c; }
+    else if (ox < b.x || ox > b.x + b.w) return -1;
+    if (dy) { const i = 1 / dy; let a = (b.y - oy) * i, c = (b.y + b.h - oy) * i, s = -1; if (a > c) { const t = a; a = c; c = t; s = 1; } if (a > t0) { t0 = a; nx = 0; ny = s; } if (c < t1) t1 = c; }
+    else if (oy < b.y || oy > b.y + b.h) return -1;
+    if (t0 > t1) return -1;
+    Collide.nx = nx; Collide.ny = ny;
+    return t0;
+  },
+  // Where segment a-b crosses segment c-d: t along a-b in [0, 1] (the point is a + (b - a) * t), or -1. Parallel segments never cross.
+  segments(ax, ay, bx, by, cx, cy, dx, dy){
+    const rx = bx - ax, ry = by - ay, sx = dx - cx, sy = dy - cy, den = rx * sy - ry * sx;
+    if (!den) return -1;
+    const t = ((cx - ax) * sy - (cy - ay) * sx) / den, u = ((cx - ax) * ry - (cy - ay) * rx) / den;
+    return t >= 0 && t <= 1 && u >= 0 && u <= 1 ? t : -1;
+  },
   pointInPoly(px, py, pts){   // pts: [x0, y0, x1, y1, ...]
     let inside = false;
     for (let i = 0, j = pts.length - 2; i < pts.length; j = i, i += 2) {
@@ -431,6 +516,29 @@ const Collide = {
     a.x -= nx * o * ka; a.y -= ny * o * ka; b.x += nx * o * kb; b.y += ny * o * kb;
     return o;
   },
+  // Move a circle { x, y, r } out of a solid box it overlaps (walls, platforms). Returns true when it was moved,
+  // with the direction it was pushed in Collide.nx / ny.
+  pushOutOfBox(o, b){
+    const qx = clamp(o.x, b.x, b.x + b.w), qy = clamp(o.y, b.y, b.y + b.h);
+    let dx = o.x - qx, dy = o.y - qy; const d2 = dx * dx + dy * dy;
+    if (d2 >= o.r * o.r) return false;
+    if (d2 > 0) { const d = Math.sqrt(d2); dx /= d; dy /= d; o.x = qx + dx * o.r; o.y = qy + dy * o.r; }
+    else {   // the centre is inside the box: leave by the nearest side
+      const l = o.x - b.x, r = b.x + b.w - o.x, t = o.y - b.y, u = b.y + b.h - o.y, m = Math.min(l, r, t, u);
+      dx = dy = 0;
+      if (m === l) { dx = -1; o.x = b.x - o.r; } else if (m === r) { dx = 1; o.x = b.x + b.w + o.r; } else if (m === t) { dy = -1; o.y = b.y - o.r; } else { dy = 1; o.y = b.y + b.h + o.r; }
+    }
+    Collide.nx = dx; Collide.ny = dy;
+    return true;
+  },
+  // Reflect a velocity { vx, vy } off the surface whose normal is in Collide.nx / ny (or pass your own). `restitution` is
+  // the share of speed kept along the normal (1 = perfect bounce, 0 = slide). Does nothing when already moving away.
+  bounce(v, restitution = 1, nx = Collide.nx, ny = Collide.ny){
+    const d = v.vx * nx + v.vy * ny; if (d >= 0) return v;
+    v.vx -= (1 + restitution) * d * nx; v.vy -= (1 + restitution) * d * ny;
+    return v;
+  },
+  nx: 0, ny: 0,
   // Keep a circle inside a box; returns which walls it touched as a bit mask (1 left, 2 right, 4 top, 8 bottom).
   clampToBox(o, b){
     let hit = 0;
@@ -445,34 +553,66 @@ const Collide = {
 /* ================================================================
    SPATIAL HASH: find things near a point fast. Rebuild it once per frame from whatever moves:
      const hash = new SpatialHash(64);                  // cell size in world units (about the size of a typical body)
-     hash.clear(); for (const e of enemies) hash.insert(e);   // anything with x and y
-     for (const e of hash.query(x, y, r)) ...           // everything in the cells that touch the circle (check the distance yourself)
-     hash.nearest(x, y, maxR, e => !e.dead);            // the closest match within maxR, or null
-   query() fills and returns one shared array unless you pass your own `out`, so copy it if you keep it
-   across another query. Objects with dead === true are skipped. The world has no bounds.
+     hash.clear(); for (const e of enemies) hash.insert(e);   // anything with x and y (and r, if it has a size)
+     for (const e of hash.within(x, y, r)) ...          // exactly the things whose circle (their own r, or a point) touches this circle
+     for (const e of hash.query(x, y, r)) ...           // rough and faster: everything in the cells that touch the circle (check the distance yourself)
+     hash.nearest(x, y, maxR, e => !e.dead);            // the closest match within maxR (default: any distance), or null
+   query() and within() fill and return one shared array unless you pass your own `out`, so copy it if you keep it
+   across another call. Objects with dead === true are skipped. The world has no bounds.
+   Things are filed by their centre. within() allows for their size by itself; with query() widen the radius by the
+   biggest r you inserted (hash.maxR) or big things near the edge are missed.
    ================================================================ */
 class SpatialHash {
-  constructor(cell = 64){ this.cell = cell; this.inv = 1 / cell; this.cells = new Map(); this.buf = []; this.used = []; }
+  constructor(cell = 64){ this.cell = cell; this.inv = 1 / cell; this.cells = new Map(); this.buf = []; this.used = []; this._reset(); }
+  _reset(){ this.maxR = 0; this.x0 = this.y0 = Infinity; this.x1 = this.y1 = -Infinity; }   // biggest r and the range of cells in use
   _key(cx, cy){ return (cx + 32768) * 65536 + (cy + 32768); }
-  clear(){ for (const a of this.used) a.length = 0; this.used.length = 0; if (this.cells.size > 8192) this.cells.clear(); }
+  clear(){ for (const a of this.used) a.length = 0; this.used.length = 0; if (this.cells.size > 8192) this.cells.clear(); this._reset(); }
   insert(o){
-    const k = this._key(Math.floor(o.x * this.inv), Math.floor(o.y * this.inv));
+    const cx = Math.floor(o.x * this.inv), cy = Math.floor(o.y * this.inv), k = this._key(cx, cy);
     let a = this.cells.get(k); if (!a) this.cells.set(k, a = []);
-    if (!a.length) this.used.push(a);
+    if (!a.length) {
+      this.used.push(a);
+      if (cx < this.x0) this.x0 = cx; if (cx > this.x1) this.x1 = cx; if (cy < this.y0) this.y0 = cy; if (cy > this.y1) this.y1 = cy;
+    }
+    if (o.r > this.maxR) this.maxR = o.r;
     a.push(o);
   }
   query(x, y, r, out = this.buf){
     out.length = 0;
-    const i = this.inv, x0 = Math.floor((x - r) * i), x1 = Math.floor((x + r) * i), y0 = Math.floor((y - r) * i), y1 = Math.floor((y + r) * i);
+    const i = this.inv;   // only the cells in use are walked, so a huge radius costs no more than the whole hash
+    const x0 = Math.max(this.x0, Math.floor((x - r) * i)), x1 = Math.min(this.x1, Math.floor((x + r) * i)), y0 = Math.max(this.y0, Math.floor((y - r) * i)), y1 = Math.min(this.y1, Math.floor((y + r) * i));
     for (let cx = x0; cx <= x1; cx++) for (let cy = y0; cy <= y1; cy++) {
-      const a = this.cells.get(this._key(cx, cy)); if (a) for (const o of a) if (!o.dead) out.push(o);
+      const a = this.cells.get(this._key(cx, cy)); if (a) for (let j = 0; j < a.length; j++) if (!a[j].dead) out.push(a[j]);
     }
     return out;
   }
-  nearest(x, y, maxR, filter = null){
-    let best = null, bd = maxR * maxR;
-    for (const o of this.query(x, y, maxR, [])) { const d = dist2(x, y, o.x, o.y); if (d < bd && (!filter || filter(o))) { bd = d; best = o; } }
+  within(x, y, r, out = this.buf){
+    this.query(x, y, r + this.maxR, out);
+    let w = 0;
+    for (let j = 0; j < out.length; j++) { const o = out[j], rr = r + (o.r || 0); if (dist2(x, y, o.x, o.y) < rr * rr) out[w++] = o; }
+    out.length = w;
+    return out;
+  }
+  // Searches outwards ring by ring and stops as soon as no farther cell can beat the best so far, so it costs the same
+  // however large maxR is. Allocates nothing.
+  nearest(x, y, maxR = Infinity, filter = null){
+    if (!this.used.length) return null;
+    const cell = this.cell, cx = Math.floor(x * this.inv), cy = Math.floor(y * this.inv);
+    const kmax = Math.max(cx - this.x0, this.x1 - cx, cy - this.y0, this.y1 - cy);
+    this._best = null; this._bd = maxR * maxR;
+    for (let k = 0; k <= kmax; k++) {
+      if (k > 1) { const reach = (k - 1) * cell; if (reach * reach >= this._bd) break; }
+      const ax = Math.max(cx - k, this.x0), bx = Math.min(cx + k, this.x1);
+      for (let i = ax; i <= bx; i++) { this._scan(i, cy - k, x, y, filter); if (k) this._scan(i, cy + k, x, y, filter); }
+      const ay = Math.max(cy - k + 1, this.y0), by = Math.min(cy + k - 1, this.y1);
+      for (let j = ay; j <= by; j++) { this._scan(cx - k, j, x, y, filter); this._scan(cx + k, j, x, y, filter); }
+    }
+    const best = this._best; this._best = null;
     return best;
+  }
+  _scan(cx, cy, x, y, filter){
+    const a = this.cells.get(this._key(cx, cy)); if (!a) return;
+    for (let j = 0; j < a.length; j++) { const o = a[j]; if (o.dead) continue; const d = dist2(x, y, o.x, o.y); if (d < this._bd && (!filter || filter(o))) { this._bd = d; this._best = o; } }
   }
 }
 
@@ -497,6 +637,8 @@ class SpatialHash {
      fx.update(dt);  fx.draw(ctx, view);                 // view: { x0, y0, x1, y1 } to skip off-screen particles
 
    A full system drops new particles (overflow: 'drop', the default) or recycles the oldest (overflow: 'replace').
+   An emitter that moves lays its particles along the path it travelled since the last update, so a fast trail
+   stays an even line instead of a clump per frame.
    Particles.basic(fx) adds ready-made kinds: 'dot', 'spark', 'smoke', 'chip' and 'glow'.
    ================================================================ */
 class Particles {
@@ -509,6 +651,7 @@ class Particles {
   }
   kind(name, def){
     const k = { name, drag: 1, gravity: 0, cull: 24, blend: null, draw: null, ...def, id: this.kinds.length };
+    if (typeof k.draw !== 'function') throw new Error(`Particles: kind "${name}" needs a draw(c, s, i, a) function`);
     if (this.ids.has(name)) { k.id = this.ids.get(name); this.kinds[k.id] = k; return k.id; }
     if (k.id > 255) throw new Error('Particles: at most 256 kinds');
     this.kinds.push(k); this.ids.set(name, k.id); return k.id;
@@ -516,7 +659,7 @@ class Particles {
   kindId(kind){ if (typeof kind === 'number') return kind; const id = this.ids.get(kind); if (id === undefined) throw new Error(`Particles: unknown kind "${kind}"`); return id; }
   get count(){ return this.n; }
   get full(){ return this.n >= this.cap; }
-  clear(){ this.n = 0; this.emitters.length = 0; }
+  clear(){ this.n = 0; for (const e of this.emitters) e.dead = true; this.emitters.length = 0; }
   _slot(){
     if (this.n < this.cap) return this.n++;
     if (this.overflow !== 'replace') return -1;
@@ -525,8 +668,9 @@ class Particles {
     return o;
   }
   spawn(kind, x, y, vx, vy, life, max = life, color = '#fff', size = 2, rot = 0, spin = 0){
+    const id = this.kindId(kind);   // before taking a slot, so an unknown kind throws without leaving a half-made particle
     const i = this._slot(); if (i < 0) return -1;
-    this.k[i] = this.kindId(kind); this.x[i] = x; this.y[i] = y; this.vx[i] = vx; this.vy[i] = vy;
+    this.k[i] = id; this.x[i] = x; this.y[i] = y; this.vx[i] = vx; this.vy[i] = vy;
     this.life[i] = life; this.max[i] = max > 0 ? max : life || 1; this.color[i] = color; this.size[i] = size; this.rot[i] = rot; this.spin[i] = spin;
     this.born[i] = this.serial++;
     return i;
@@ -550,8 +694,8 @@ class Particles {
   // A continuous source: `rate` particles per second at (x, y), using burst() options. Move it by setting x / y,
   // or follow(obj, dx, dy) to track an object with x / y. on = false pauses it; stop() removes it.
   emitter(kind, o = {}){
-    const e = { kind, x: o.x || 0, y: o.y || 0, rate: o.rate ?? 20, on: true, opts: o, acc: 0, target: null, dx: 0, dy: 0, dead: false,
-      follow(obj, dx = 0, dy = 0){ e.target = obj; e.dx = dx; e.dy = dy; return e; },
+    const e = { kind, x: o.x || 0, y: o.y || 0, rate: o.rate ?? 20, on: true, opts: o, acc: 0, target: null, dx: 0, dy: 0, dead: false, px: NaN, py: NaN,
+      follow(obj, dx = 0, dy = 0){ e.target = obj; e.dx = dx; e.dy = dy; e.px = NaN; return e; },   // no trail from where it was before
       stop(){ e.dead = true; } };
     this.emitters.push(e);
     return e;
@@ -562,7 +706,16 @@ class Particles {
     for (const e of this.emitters) {
       if (e.dead || (e.target && e.target.dead)) continue;
       if (e.target) { e.x = e.target.x + e.dx; e.y = e.target.y + e.dy; }
-      if (e.on) { e.acc += e.rate * dt; const n = e.acc | 0; if (n) { e.acc -= n; this.burst(e.kind, e.x, e.y, n, e.opts); } }
+      if (e.on) {
+        e.acc += e.rate * dt; const n = e.acc | 0;
+        if (n) {
+          e.acc -= n;
+          const mx = e.x - e.px, my = e.y - e.py;
+          if (n > 1 && mx * mx + my * my > 1) for (let j = 1; j <= n; j++) this.burst(e.kind, e.px + mx * j / n, e.py + my * j / n, 1, e.opts);   // spread along the move (NaN, the first time, fails the test)
+          else this.burst(e.kind, e.x, e.y, n, e.opts);
+        }
+      }
+      e.px = e.x; e.py = e.y;
       this.emitters[w++] = e;
     }
     this.emitters.length = w;
@@ -625,7 +778,7 @@ Particles.basic = sys => {
      cam.addTrauma(0.5);                   // smooth shake: trauma squared x shakeMax, trauma falls by shakeDecay per second
      cam.kick(6);                          // or a direct jolt in pixels that dies away exponentially (kickDecay per second)
      cam.update(dt);  cam.apply(ctx);      // sets the canvas transform; draw the world after this
-     cam.view                              // { x0, y0, x1, y1 } visible world rect (for culling and Particles.draw)
+     cam.view                              // { x0, y0, x1, y1 } visible world rect (for culling and Particles.draw), widened while shaking
      cam.inView(x, y, margin);  cam.toWorld(sx, sy);  cam.toScreen(wx, wy);   // screen = CSS pixels
      cam.applyScreen(ctx);                 // back to CSS-pixel space for the HUD
    zoom multiplies the core `scale`. bounds = { x0, y0, x1, y1 } keeps the view inside the world.
@@ -652,7 +805,8 @@ class Camera {
     this.amp *= Math.exp(-this.kickDecay * dt); if (this.amp < 0.01) this.amp = 0;
     const s = this.trauma * this.trauma * this.shakeMax + this.amp;
     this.ox = s ? (Math.random() * 2 - 1) * s : 0; this.oy = s ? (Math.random() * 2 - 1) * s : 0;
-    const v = this.view; v.x0 = this.x - hw; v.x1 = this.x + hw; v.y0 = this.y - hh; v.y1 = this.y + hh;
+    const v = this.view, pad = s / this.k;   // the shake can show this much more world on any side
+    v.x0 = this.x - hw - pad; v.x1 = this.x + hw + pad; v.y0 = this.y - hh - pad; v.y1 = this.y + hh + pad;
   }
   apply(c){
     const k = this.k * dpr;
@@ -670,44 +824,60 @@ class Camera {
    INPUT: keyboard, mouse / touch pointer, an on-screen touch stick, gamepads, and named actions over all of them.
      keys.has('a')                       // raw key state (lower-case KeyboardEvent.key); `keys` is Input.keys
      Input.pressed('a')                  // went down since the last Input.endFrame()
-     Input.pointer                       // { x, y, down, hasMouse, type } in CSS pixels
+     Input.pointer                       // { x, y, down, button, hasMouse, type } in CSS pixels; Input.mouseDown(button)
+     Input.wheel                         // wheel movement since the last Input.endFrame() (positive = down / away)
      Input.stick                         // touch drag stick { on, ox, oy, x, y }; Input.stickVec(radius) -> { x, y }
      Input.pollPad()                     // call once per frame; Input.pad is { on, lx, ly, rx, ry, dx, dy, id }, Input.padDown(i) / padHit(i)
      Input.bind('jump', ['key: ', 'pad:0', 'mouse:0']);   Input.down('jump');  Input.hit('jump');
      Input.move({ up: 'up', down: 'down', left: 'left', right: 'right' })   // -> { x, y }, length <= 1, includes the left stick and the touch stick
      Input.endFrame()                    // at the end of every frame (clears the "pressed this frame" sets)
+   Loop.start({ autoInput: true }) calls pollPad() and endFrame() for you at the right moments; prefer it, and
+   always use it with a fixed step (see engine/loop.js).
    Pad button numbers follow the standard mapping: 0 A, 1 B, 2 X, 3 Y, 4 LB, 5 RB, 8 Back, 9 Start, 12-15 d-pad up/down/left/right.
+   Both sticks have a round dead zone of Input.padDead, so a diagonal is as easy to hold as a straight line.
    Input.stickOn(canvas, allow) starts the touch stick on pointerdown when allow(event) is true.
    Typing in a text field is ignored by keys; Input.ignore(e) can widen that rule.
+   Input.block(['key: ', 'key:arrowup']) stops those keys doing their browser job (scrolling the page) while the game has them.
    ================================================================ */
 const Input = {
-  keys: new Set(), _hitKeys: new Set(),
-  pointer: { x: 0, y: 0, down: false, hasMouse: false, type: '' }, _hitMouse: new Set(),
+  keys: new Set(), _hitKeys: new Set(), _codes: new Map(), _blocked: new Set(),
+  pointer: { x: 0, y: 0, down: false, button: 0, hasMouse: false, type: '' }, _hitMouse: new Set(), _ptrs: new Map(), wheel: 0,
   stick: { on: false, id: null, ox: 0, oy: 0, x: 0, y: 0 },
-  pad: { on: false, id: '', lx: 0, ly: 0, rx: 0, ry: 0, dx: 0, dy: 0 }, padDead: 0.22, _pb: [], _pp: [],
+  pad: { on: false, id: '', lx: 0, ly: 0, rx: 0, ry: 0, dx: 0, dy: 0 }, padDead: 0.22, _pb: [], _pp: [], _hitPad: new Set(),
   actions: new Map(),
-  ignore(e){ return e.target instanceof HTMLInputElement && e.target.type !== 'range' && e.target.type !== 'checkbox'; },
+  ignore(e){ const t = e.target; return !!t && (t.isContentEditable === true || t.tagName === 'TEXTAREA' || (t.tagName === 'INPUT' && t.type !== 'range' && t.type !== 'checkbox' && t.type !== 'radio' && t.type !== 'button')); },
   pressed(k){ return this._hitKeys.has(k); },
-  endFrame(){ this._hitKeys.clear(); this._hitMouse.clear(); },
+  // pad: also forget gamepad presses (the loop passes true; a pollPad() of your own already does this).
+  endFrame(pad = false){ this._hitKeys.clear(); this._hitMouse.clear(); this.wheel = 0; if (pad) this._hitPad.clear(); },
+  block(sources){ for (const s of sources) this._blocked.add(s.startsWith('key:') ? s.slice(4) : s); },
+  mouseDown(button = 0){ for (const b of this._ptrs.values()) if (b === button) return true; return false; },   // any pointer: a touch counts as button 0
+  releaseAll(){ this.keys.clear(); this._codes.clear(); this._ptrs.clear(); this.stick.on = false; this.pointer.down = false; },
   // ---- gamepad
   deadzone(v){ const d = this.padDead; return Math.abs(v) < d ? 0 : (v - Math.sign(v) * d) / (1 - d); },
-  pollPad(){
+  // keep: add this poll's new presses to the ones not yet cleared by endFrame(true), instead of replacing them.
+  pollPad(keep = false){
     const gp = [...(navigator.getGamepads?.() || [])].find(g => g && g.connected), P = this.pad;
     this._pp = this._pb;
-    if (!gp) { P.on = false; this._pb = []; return P; }
+    if (!keep) this._hitPad.clear();
+    if (!gp) { P.on = false; this._pb = []; P.lx = P.ly = P.rx = P.ry = P.dx = P.dy = 0; return P; }
     P.on = true; P.id = gp.id;
-    this._pb = gp.buttons.map(b => !!(b && (b.pressed || b.value > 0.5)));
-    P.lx = this.deadzone(gp.axes[0] || 0); P.ly = this.deadzone(gp.axes[1] || 0); P.rx = gp.axes[2] || 0; P.ry = gp.axes[3] || 0;
-    P.dx = (this._pb[15] ? 1 : 0) - (this._pb[14] ? 1 : 0); P.dy = (this._pb[13] ? 1 : 0) - (this._pb[12] ? 1 : 0);
+    const pb = this._pb = gp.buttons.map(b => !!(b && (b.pressed || b.value > 0.5)));
+    for (let i = 0; i < pb.length; i++) if (pb[i] && !this._pp[i]) this._hitPad.add(i);
+    for (let s = 0; s < 2; s++) {   // round dead zone, rescaled so the stick still reaches 1
+      let x = gp.axes[s * 2] || 0, y = gp.axes[s * 2 + 1] || 0; const l = Math.hypot(x, y), d = this.padDead;
+      if (l <= d) x = y = 0; else { const m = Math.min(1, (l - d) / (1 - d)) / l; x *= m; y *= m; }
+      if (s) { P.rx = x; P.ry = y; } else { P.lx = x; P.ly = y; }
+    }
+    P.dx = (pb[15] ? 1 : 0) - (pb[14] ? 1 : 0); P.dy = (pb[13] ? 1 : 0) - (pb[12] ? 1 : 0);
     return P;
   },
   padDown(i){ return !!this._pb[i]; },
-  padHit(i){ return !!this._pb[i] && !this._pp[i]; },
-  padAnyHit(){ return this._pb.some((b, i) => b && !this._pp[i]); },
+  padHit(i){ return this._hitPad.has(i); },
+  padAnyHit(){ return this._hitPad.size > 0; },
   // ---- touch stick
   stickOn(canvas, allow = () => true){
     const s = this.stick;
-    canvas.addEventListener('pointerdown', e => { if (!allow(e)) return; s.on = true; s.id = e.pointerId; s.ox = s.x = e.clientX; s.oy = s.y = e.clientY; canvas.setPointerCapture?.(e.pointerId); });
+    canvas.addEventListener('pointerdown', e => { if (s.on || !allow(e)) return; s.on = true; s.id = e.pointerId; s.ox = s.x = e.clientX; s.oy = s.y = e.clientY; canvas.setPointerCapture?.(e.pointerId); });   // a second finger doesn't steal the stick
     canvas.addEventListener('pointermove', e => { if (s.on && e.pointerId === s.id) { s.x = e.clientX; s.y = e.clientY; } });
     const end = e => { if (e.pointerId === s.id) s.on = false; };
     canvas.addEventListener('pointerup', end); canvas.addEventListener('pointercancel', end);
@@ -719,9 +889,10 @@ const Input = {
   },
   // ---- actions
   bind(name, sources){ this.actions.set(name, sources.map(s => { const i = s.indexOf(':'); return [s.slice(0, i), s.slice(i + 1)]; })); },
+  unbind(name){ this.actions.delete(name); },
   down(name){
     const l = this.actions.get(name); if (!l) return false;
-    for (const [t, v] of l) if (t === 'key' ? this.keys.has(v) : t === 'pad' ? this.padDown(+v) : t === 'mouse' ? this.pointer.down && this.pointer.button === +v : false) return true;
+    for (const [t, v] of l) if (t === 'key' ? this.keys.has(v) : t === 'pad' ? this.padDown(+v) : t === 'mouse' ? this.mouseDown(+v) : false) return true;
     return false;
   },
   hit(name){
@@ -738,14 +909,46 @@ const Input = {
     const l = Math.hypot(x, y); if (l > 1) { x /= l; y /= l; }
     return { x, y };
   },
+  // ---- event handlers
+  _keyDown(e){
+    if (this.ignore(e)) return;
+    const k = e.key.toLowerCase();
+    if (this._blocked.has(k) && !e.ctrlKey && !e.metaKey && !e.altKey) e.preventDefault();
+    if (!e.repeat) this._hitKeys.add(k);
+    this.keys.add(k); if (e.code) this._codes.set(e.code, k);
+  },
+  // The key that comes up can have another name than the one that went down (hold 1, press Shift, release: "!"), so
+  // the physical key is matched too. macOS sends no key-up for keys released while Cmd is held: Cmd up releases them all.
+  _keyUp(e){
+    const k = e.key.toLowerCase(), was = e.code ? this._codes.get(e.code) : undefined;
+    this.keys.delete(k);
+    if (was !== undefined) { this.keys.delete(was); this._codes.delete(e.code); }
+    if (k === 'meta') { this.keys.clear(); this._codes.clear(); }
+  },
+  // Every held button of every pointer is tracked (key: pointer and button), so two fingers, or two mouse buttons, don't
+  // release each other. A mouse is one pointer for all its buttons: only the first press and the last release come as
+  // pointerdown / pointerup, the ones in between as a pointermove that names the button.
+  _ptrDown(e){ const p = this.pointer; p.x = e.clientX; p.y = e.clientY; p.down = true; p.button = e.button; p.type = e.pointerType; this._ptrs.set(e.pointerId * 8 + e.button, e.button); this._hitMouse.add(e.button); },
+  _ptrMove(e){
+    const p = this.pointer; p.x = e.clientX; p.y = e.clientY; p.type = e.pointerType; if (e.pointerType === 'mouse') p.hasMouse = true;
+    if (e.button >= 0 && e.button < 5 && e.pointerType === 'mouse') {
+      if (e.buttons & [1, 4, 2, 8, 16][e.button]) this._ptrDown(e); else { this._ptrs.delete(e.pointerId * 8 + e.button); p.down = this._ptrs.size > 0; }
+    }
+  },
+  _ptrUp(e){
+    for (const k of this._ptrs.keys()) if (Math.floor(k / 8) === e.pointerId) this._ptrs.delete(k);
+    this.pointer.down = this._ptrs.size > 0;
+  },
 };
 const keys = Input.keys;
-addEventListener('keydown', e => { if (Input.ignore(e)) return; const k = e.key.toLowerCase(); if (!e.repeat) Input._hitKeys.add(k); keys.add(k); }, true);
-addEventListener('keyup', e => keys.delete(e.key.toLowerCase()), true);
-addEventListener('blur', () => { keys.clear(); Input.stick.on = false; Input.pointer.down = false; });
-addEventListener('pointermove', e => { const p = Input.pointer; p.x = e.clientX; p.y = e.clientY; p.type = e.pointerType; if (e.pointerType === 'mouse') p.hasMouse = true; }, true);
-addEventListener('pointerdown', e => { const p = Input.pointer; p.x = e.clientX; p.y = e.clientY; p.down = true; p.button = e.button; p.type = e.pointerType; Input._hitMouse.add(e.button); }, true);
-addEventListener('pointerup', () => { Input.pointer.down = false; }, true);
+addEventListener('keydown', e => Input._keyDown(e), true);
+addEventListener('keyup', e => Input._keyUp(e), true);
+addEventListener('blur', () => Input.releaseAll());
+addEventListener('pointermove', e => Input._ptrMove(e), true);
+addEventListener('pointerdown', e => Input._ptrDown(e), true);
+addEventListener('pointerup', e => Input._ptrUp(e), true);
+addEventListener('pointercancel', e => Input._ptrUp(e), true);
+addEventListener('wheel', e => { Input.wheel += Math.sign(e.deltaY); }, { capture: true, passive: true });
 
 
 /* ---- src/ui-nav.js ---- */
@@ -791,19 +994,19 @@ const UINav = {
    Browsers only allow sound after a click or key press: call Sound.init() from one (or Sound.unlockOnGesture()).
      Sound.define('hit', (S, t) => { S.noise(0.06, 'bandpass', 3000, 0.16, 2); S.tone('square', 1100, 300, 0.04, 0.03); }, 0.035);
      Sound.play('hit');                    // the last argument of define() is the minimum gap between two plays (rate limit)
-     Sound.muted = true;  Sound.setVolume(0.5);
+     Sound.muted = true;  Sound.setVolume(0.5);   // muting also silences what is already playing, drones included
      const buf = await Sound.load('sfx/boom.ogg');  Sound.playBuffer(buf, { vol: 0.8, rate: 1.1 });
-     const hum = Sound.drone('sawtooth', 40, 700);  hum.set(freq, vol);   // a continuous tone (engine hum, wind)
+     const hum = Sound.drone('sawtooth', 40, 700);  hum.set(freq, vol);  hum.stop();   // a continuous tone (engine hum, wind)
    Inside a recipe: S.noise(dur, filterType, freq, vol, q = 1, delay = 0) and S.tone(wave, f0, f1, dur, vol, delay = 0),
    both scheduled from the current time. S.ac is the AudioContext and S.out the master gain.
    ================================================================ */
 const Sound = {
-  ac: null, out: null, muted: false, vol: 0.5, noiseBuf: null, recipes: new Map(), last: new Map(), drones: [],
+  ac: null, out: null, _muted: false, vol: 0.5, noiseBuf: null, recipes: new Map(), last: new Map(), drones: [],
   init(){
     if (this.ac) { this.ac.resume?.(); return true; }
     try {
       const ac = new (window.AudioContext || window.webkitAudioContext)();
-      this.ac = ac; this.out = ac.createGain(); this.out.gain.value = this.vol; this.out.connect(ac.destination);
+      this.ac = ac; this.out = ac.createGain(); this.out.gain.value = this._muted ? 0 : this.vol; this.out.connect(ac.destination);
       const len = ac.sampleRate * 0.5, buf = ac.createBuffer(1, len, ac.sampleRate), d = buf.getChannelData(0);
       for (let i = 0; i < len; i++) d[i] = Math.random() * 2 - 1;
       this.noiseBuf = buf;
@@ -812,7 +1015,10 @@ const Sound = {
     } catch (e) { this.ac = null; return false; }
   },
   unlockOnGesture(){ for (const ev of ['pointerdown', 'pointerup', 'keydown', 'touchend']) addEventListener(ev, () => this.init(), { capture: true, passive: true }); },
-  setVolume(v){ this.vol = v; if (this.out) this.out.gain.value = v; },
+  get muted(){ return this._muted; },
+  set muted(m){ this._muted = !!m; this._gain(); },
+  setVolume(v){ this.vol = v; this._gain(); },
+  _gain(){ if (this.out) this.out.gain.setTargetAtTime(this._muted ? 0 : this.vol, this.ac.currentTime, 0.015); },   // a short ramp, so no click
   define(name, fn, gap = 0){ this.recipes.set(name, { fn, gap }); },
   play(name){
     const ac = this.ac, r = this.recipes.get(name); if (!ac || this.muted || !r) return;
@@ -835,7 +1041,12 @@ const Sound = {
     g.gain.setValueAtTime(0.0001, t); g.gain.linearRampToValueAtTime(vol, t + 0.005); g.gain.exponentialRampToValueAtTime(0.001, t + dur);
     o.connect(g); g.connect(this.out); o.start(t); o.stop(t + dur + 0.02);
   },
-  async load(url){ const r = await fetch(url); const b = await r.arrayBuffer(); if (!this.ac) this.init(); return this.ac.decodeAudioData(b); },
+  async load(url){
+    const r = await fetch(url); if (!r.ok) throw new Error(`Sound: ${url} (${r.status})`);
+    const b = await r.arrayBuffer();
+    if (!this.ac && !this.init()) throw new Error('Sound: no Web Audio here');
+    return this.ac.decodeAudioData(b);
+  },
   playBuffer(buf, o = {}){
     if (!this.ac || this.muted || !buf) return null;
     const s = this.ac.createBufferSource(), g = this.ac.createGain(); s.buffer = buf; s.playbackRate.value = o.rate || 1; s.loop = !!o.loop; g.gain.value = o.vol ?? 1;
@@ -845,7 +1056,8 @@ const Sound = {
   drone(wave = 'sawtooth', freq = 40, cutoff = 700){
     const S = this, d = { o: null, g: null,
       _build(){ if (!S.ac || d.o) return; const o = S.ac.createOscillator(), f = S.ac.createBiquadFilter(), g = S.ac.createGain(); o.type = wave; o.frequency.value = freq; f.type = 'lowpass'; f.frequency.value = cutoff; g.gain.value = 0; o.connect(f); f.connect(g); g.connect(S.out); o.start(); d.o = o; d.g = g; },
-      set(fr, vol){ if (!d.o) d._build(); if (!d.o) return; const t = S.ac.currentTime; d.o.frequency.setTargetAtTime(fr, t, 0.05); d.g.gain.setTargetAtTime(S.muted ? 0 : vol, t, 0.08); } };
+      set(fr, vol){ if (!d.o) d._build(); if (!d.o) return; const t = S.ac.currentTime; d.o.frequency.setTargetAtTime(fr, t, 0.05); d.g.gain.setTargetAtTime(vol, t, 0.08); },
+      stop(){ const i = S.drones.indexOf(d); if (i >= 0) S.drones.splice(i, 1); if (d.o) { try { d.o.stop(); d.o.disconnect(); d.g.disconnect(); } catch (e) {} } d.o = d.g = null; d._build = () => {}; } };
     this.drones.push(d); d._build();
     return d;
   },
@@ -921,18 +1133,33 @@ const Assets = {
      const sp = Sprites.get('wedge:red', 24, devicePxPerUnit, c => drawWedge(c));   // draw() gets a context centred on (0, 0)
      Sprites.stamp(ctx, sp, x, y, angle);       // or stamp(ctx, sp) at the current origin
      Sprites.scaleOf(ctx)                       // device pixels per world unit right now, rounded so a few sizes cover every zoom
-   R is the drawing's radius in world units; pass the scale you will draw at so it stays sharp. Include anything
-   that changes the art in the key, and draw moving parts live on top.
+   R is the drawing's radius in world units; pass the scale you will draw at so it stays sharp: each scale gets its
+   own copy, so a sprite is redrawn rather than stretched after a zoom or a resize. Include anything else that
+   changes the art in the key, and draw moving parts live on top.
+
+   SPRITE SHEETS: frames cut from one image in a grid, and animations over them.
+     const sheet = Sprites.sheet(Assets.get('hero'), 32, 32, { margin: 0, spacing: 0 });   // frame size in image pixels
+     sheet.draw(ctx, frame, x, y, { w: 48, angle: 0, flipX: true, alpha: 1, ox: 0.5, oy: 0.5 });   // w / h in world units (default: the frame size)
+     const run = sheet.anim([0, 1, 2, 3], 12);          // frames and frames per second; { loop: false, onEnd } to play once
+     run.update(dt);  run.draw(ctx, x, y, opts);  run.frame;  run.done;  run.reset();
+   Frames are numbered left to right, top to bottom, from 0. ox / oy set the point of the frame placed on (x, y),
+   as a share of its size (0.5, 1 = bottom centre, for something standing on the ground).
    ================================================================ */
 const Sprites = {
   map: new Map(), max: 800, made: 0,
   get(key, R, ds, draw){
     let sp = this.map.get(key);
-    if (sp) { this.map.delete(key); this.map.set(key, sp); return sp; }   // mark as recently used
+    if (sp && sp.ds !== ds) {
+      // Drawn for another scale. The plain key always holds the scale asked for last, so the usual case (one scale at a
+      // time) builds no string; the other copies wait under key@scale.
+      this.map.delete(key); this.map.set(key + '@' + sp.ds, sp);
+      const k2 = key + '@' + ds; sp = this.map.get(k2);
+      if (sp) { this.map.delete(k2); this.map.set(key, sp); return sp; }
+    } else if (sp) { this.map.delete(key); this.map.set(key, sp); return sp; }   // mark as recently used
     const px = Math.ceil(2 * R * ds) + 2, cnv = document.createElement('canvas'); cnv.width = cnv.height = px;
     const c = cnv.getContext('2d'); c.setTransform(ds, 0, 0, ds, px / 2, px / 2); c.lineCap = 'round';
     draw(c);
-    sp = { cv: cnv, h: px / 2 / ds, w: px / ds }; this.map.set(key, sp); this.made++;
+    sp = { cv: cnv, h: px / 2 / ds, w: px / ds, ds }; this.map.set(key, sp); this.made++;
     if (this.map.size > this.max) this.map.delete(this.map.keys().next().value);   // drop the least recently used
     return sp;
   },
@@ -943,6 +1170,36 @@ const Sprites = {
   },
   scaleOf(c){ const m = c.getTransform(), d = Math.hypot(m.a, m.b) * 1.04; return 2 ** (Math.round(Math.log2(d) * 16) / 16); },
   clear(){ this.map.clear(); },
+  sheet(img, fw, fh, o = {}){
+    const m = o.margin || 0, sp = o.spacing || 0, iw = img.naturalWidth || img.width, ih = img.naturalHeight || img.height;
+    const cols = Math.max(1, Math.floor((iw - 2 * m + sp) / (fw + sp))), rows = Math.max(1, Math.floor((ih - 2 * m + sp) / (fh + sp)));
+    const sheet = { img, fw, fh, cols, rows, count: cols * rows,
+      draw(c, f, x, y, d){
+        const sx = m + (f % cols) * (fw + sp), sy = m + Math.floor(f / cols) * (fh + sp);
+        if (!d) { c.drawImage(img, sx, sy, fw, fh, x - fw / 2, y - fh / 2, fw, fh); return; }
+        const w = d.w ?? (d.h !== undefined ? d.h * fw / fh : fw), h = d.h ?? w * fh / fw, ox = d.ox ?? 0.5, oy = d.oy ?? 0.5;
+        const a = d.alpha, pa = c.globalAlpha; if (a !== undefined) c.globalAlpha = pa * a;
+        if (d.angle || d.flipX || d.flipY) {
+          c.save(); c.translate(x, y); if (d.angle) c.rotate(d.angle); c.scale(d.flipX ? -1 : 1, d.flipY ? -1 : 1);
+          c.drawImage(img, sx, sy, fw, fh, -w * ox, -h * oy, w, h); c.restore();
+        } else c.drawImage(img, sx, sy, fw, fh, x - w * ox, y - h * oy, w, h);
+        if (a !== undefined) c.globalAlpha = pa;
+      },
+      anim(frames, fps = 10, ao = {}){
+        const an = { frames, fps, loop: ao.loop ?? true, onEnd: ao.onEnd || null, t: 0, i: 0, done: false,
+          get frame(){ return an.frames[an.i]; },
+          reset(){ an.t = 0; an.i = 0; an.done = false; return an; },
+          update(dt){
+            if (an.done || !(an.fps > 0)) return an;
+            an.t += dt; const n = an.frames.length; let i = Math.floor(an.t * an.fps);
+            if (i >= n) { if (an.loop) { an.t -= Math.floor(i / n) * n / an.fps; i %= n; } else { i = n - 1; an.done = true; an.i = i; an.onEnd && an.onEnd(an); return an; } }
+            an.i = i; return an;
+          },
+          draw(c, x, y, d){ sheet.draw(c, an.frames[an.i], x, y, d); } };
+        return an;
+      } };
+    return sheet;
+  },
 };
 
 
@@ -1080,6 +1337,6 @@ async function netInit(){
   else NET.kind = 'none';
   return NET.kind !== 'none';
 }
-const netJoin = name => NET.api.join(name);
+const netJoin = name => NET.api ? NET.api.join(name) : Promise.reject(new Error('netJoin: call netInit() first (or no transport is available)'));
 const safePres = (room, obj) => { try { room.presence(obj).catch(() => {}); } catch (e) {} };
 

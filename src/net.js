@@ -34,5 +34,5 @@ async function netInit(){
   else NET.kind = 'none';
   return NET.kind !== 'none';
 }
-const netJoin = name => NET.api.join(name);
+const netJoin = name => NET.api ? NET.api.join(name) : Promise.reject(new Error('netJoin: call netInit() first (or no transport is available)'));
 const safePres = (room, obj) => { try { room.presence(obj).catch(() => {}); } catch (e) {} };
