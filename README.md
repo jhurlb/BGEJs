@@ -91,3 +91,7 @@ Edit `src/`, never `dist/bge.js`. Add a new file to `src/index.txt` at the point
 ## Using it in a game repo
 
 Copy `dist/bge.js` into the game, or copy `src/` if you want separate files while debugging. Battle Bot Survivors keeps a copy of `src/` in its `engine/` folder and records the BGEjs commit it came from in `engine/BGEJS_VERSION`.
+
+## License
+
+Public domain, under the [Unlicense](UNLICENSE).
