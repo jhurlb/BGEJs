@@ -6,7 +6,7 @@
      cam.addTrauma(0.5);                   // smooth shake: trauma squared x shakeMax, trauma falls by shakeDecay per second
      cam.kick(6);                          // or a direct jolt in pixels that dies away exponentially (kickDecay per second)
      cam.update(dt);  cam.apply(ctx);      // sets the canvas transform; draw the world after this
-     cam.view                              // { x0, y0, x1, y1 } visible world rect (for culling and Particles.draw)
+     cam.view                              // { x0, y0, x1, y1 } visible world rect (for culling and Particles.draw), widened while shaking
      cam.inView(x, y, margin);  cam.toWorld(sx, sy);  cam.toScreen(wx, wy);   // screen = CSS pixels
      cam.applyScreen(ctx);                 // back to CSS-pixel space for the HUD
    zoom multiplies the core `scale`. bounds = { x0, y0, x1, y1 } keeps the view inside the world.
@@ -33,7 +33,8 @@ class Camera {
     this.amp *= Math.exp(-this.kickDecay * dt); if (this.amp < 0.01) this.amp = 0;
     const s = this.trauma * this.trauma * this.shakeMax + this.amp;
     this.ox = s ? (Math.random() * 2 - 1) * s : 0; this.oy = s ? (Math.random() * 2 - 1) * s : 0;
-    const v = this.view; v.x0 = this.x - hw; v.x1 = this.x + hw; v.y0 = this.y - hh; v.y1 = this.y + hh;
+    const v = this.view, pad = s / this.k;   // the shake can show this much more world on any side
+    v.x0 = this.x - hw - pad; v.x1 = this.x + hw + pad; v.y0 = this.y - hh - pad; v.y1 = this.y + hh + pad;
   }
   apply(c){
     const k = this.k * dpr;

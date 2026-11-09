@@ -10,7 +10,9 @@
      system('update', 'motion', (w, dt) => { ... }, 10);   // lower order runs first
      runSystems('update', G.world, dt);
 
-   Destroying is deferred until the phase finishes (safe mid-loop); kill() removes at once.
+   Destroying is deferred until the phase finishes (safe mid-loop); kill() removes at once. exists(id) tells whether
+   an entity is still there; add() on one that is gone does nothing (and returns undefined), so a late effect can't
+   leave a component behind with no entity. clear() empties the world.
    Iteration follows spawn order, so things drawn by a system keep the order they were made in. list(name) gives
    one component kind as a cached array.
    Common components, with systems in the 'update' phase from ecsBasics(): Pos {x, y} · Vel {x, y} (moves Pos) ·
@@ -21,7 +23,9 @@ class World {
   constructor(){ this.nextId = 1; this.stores = new Map(); this.alive = new Set(); this.dead = []; this.lists = new Map(); this.stale = new Set(); }
   store(name){ let s = this.stores.get(name); if (!s) this.stores.set(name, s = new Map()); return s; }
   spawn(comps){ const id = this.nextId++; this.alive.add(id); for (const k in comps) { this.store(k).set(id, comps[k]); this.stale.add(k); } return id; }
-  add(id, name, data){ this.store(name).set(id, data); this.stale.add(name); return data; }
+  add(id, name, data){ if (!this.alive.has(id)) return undefined; this.store(name).set(id, data); this.stale.add(name); return data; }
+  exists(id){ return this.alive.has(id); }
+  get size(){ return this.alive.size; }   // live entities
   get(id, name){ const s = this.stores.get(name); return s && s.get(id); }
   has(id, name){ const s = this.stores.get(name); return !!s && s.has(id); }
   remove(id, name){ const s = this.stores.get(name); if (s && s.delete(id)) this.stale.add(name); }
@@ -36,6 +40,7 @@ class World {
     return l;
   }
   flush(){ for (const id of this.dead) this.kill(id); this.dead.length = 0; }
+  clear(){ for (const [k, s] of this.stores) if (s.size) { s.clear(); this.stale.add(k); } this.alive.clear(); this.dead.length = 0; }
   // Calls fn(id, ...components) for every entity that has all the named components (walks the smallest store).
   // One- and two-component queries (nearly all of them) skip the argument array and the spread.
   each(names, fn){
