@@ -9,6 +9,7 @@ A small engine for 2D browser games on the canvas. It's plain JavaScript in clas
 ```
 
 See [`examples/orb-sweep`](examples/orb-sweep) for a complete game in about 150 lines that uses most of the engine.
+[`examples/tumble`](examples/tumble) is a small platformer sandbox built on the physics world: crates, slopes, one-way and moving platforms, thrown balls.
 
 ## What's in it
 
@@ -23,7 +24,8 @@ See [`examples/orb-sweep`](examples/orb-sweep) for a complete game in about 150 
 | `scenes.js` | `Scenes` | A scene stack: `go`, `push`, `pop`, with enter / exit / pause / resume hooks |
 | `pool.js` | `Pool` | Object pooling |
 | `store.js` | `Store` | Namespaced `localStorage` with defaults and versioned migrations; never throws, and falls back to memory when storage is blocked |
-| `collide.js` | `Collide` | Circles, boxes, segments, rays, polygons, overlap separation, pushing a circle out of a wall, bouncing off it, keep-inside-box |
+| `collide.js` | `Collide` | Circles, boxes, segments, rays, polygons, overlap separation, pushing a circle out of a wall, bouncing off it, keep-inside-box. For any two shapes (circle, box, convex polygon): `overlap`, a swept `sweep` that nothing tunnels through, `ray`, and `resolve` for a whole collision |
+| `physics.js` | `Physics` | A world of bodies that fall, collide, stack, slide and bounce: gravity, mass, friction, bounce, fixed and moving platforms, one-way platforms, sensors, layers, touch flags and hit events, raycasts. Fast things don't tunnel |
 | `spatial.js` | `SpatialHash` | Fast "what's near here": exact `within()` for things with a size, rough `query()`, and a `nearest()` whose cost doesn't grow with the search range |
 | `particles.js` | `Particles` | Pooled particles in typed arrays: kinds you draw or just describe (shape, size / opacity / colour over life), bursts, emitters that follow objects, named effects, draw layers, culling, blend modes |
 | `camera.js` | `Camera` | Follow with smoothing, a deadzone and look-ahead; frame a group and zoom to fit; eased zoom, zoom at the cursor, scripted moves; rotation, world bounds, parallax; trauma shake (smooth, with roll), jolts and directional kicks; screen and world conversion, view rect for culling |
@@ -119,14 +121,41 @@ drawHills(cam.layerView(0.5));                // and the part of that layer on s
 - Engine files never read a game's state. Games build on the engine, not the other way round.
 - Everything is a global, the way plain `<script>` files share one scope. A file's top-level code only uses files listed above it in `src/index.txt`.
 - No allocation in hot paths where it can be avoided: particles live in typed arrays, the spatial hash reuses its cell arrays, queries fill a shared buffer, and emitting an event copies nothing.
-- New engine features go on the existing globals (`Collide.rayBox`, `Sprites.sheet`) rather than adding new ones, because every global is a name a game can no longer use for itself.
+- New engine features go on the existing globals (`Collide.rayBox`, `Sprites.sheet`) rather than adding new ones, because every global is a name a game can no longer use for itself. A new kind of thing that holds its own state gets one global, as `Physics` did.
 - Anything that touches browser storage or audio is wrapped so a private window or a blocked autoplay can't crash a game.
+
+## Physics
+
+A body is your own object in one of three shapes. The world moves it and tells you what it touches:
+
+```js
+const world = new Physics({ gravity: 1500 });            // leave gravity out for a top-down game
+world.add({ x: 0, y: 400, w: 800, h: 40, fixed: true });                 // a floor. Tiles side by side work too: seams don't catch
+world.add({ x: 300, y: 300, w: 120, h: 10, fixed: true, oneWay: true }); // jump up through it, land on it
+world.add({ x: 500, y: 360, pts: [0, 40, 80, 0, 80, 40], fixed: true }); // a slope: any convex polygon
+const lift = world.add({ x: 600, y: 300, w: 80, h: 12, fixed: true, vx: 60 });   // fixed + a velocity = a moving platform
+const player = world.add({ x: 40, y: 300, w: 24, h: 36, friction: 0 });
+const crate = world.add({ x: 200, y: 360, w: 32, h: 32, mass: 2 });
+const coin = world.add({ x: 340, y: 270, r: 8, fixed: true, sensor: true, onHit(other){ if (other === player) this.dead = true; } });
+
+function update(dt){
+  player.vx = Input.move({ left: 'left', right: 'right' }).x * 260;
+  if (player.touch & 8 && Input.hit('jump')) player.vy = -640;          // touch: 1 left, 2 right, 4 top, 8 bottom
+  if (Input.hit('fire')) world.add({ x: player.x + 30, y: player.y + 10, r: 4, vx: 3000, bounce: 0.5 });   // 50 units a step, and it still hits
+  world.step(dt);
+}
+world.onBegin = (a, b, nx, ny, speed) => { if (speed > 300) Sound.play('thud'); };
+```
+
+Everything about a body (`vx`, `vy`, `mass`, `bounce`, `friction`, `drag`, `gravityScale`, `layer` / `mask`, `sensor`) is a plain property you can change at any time. `world.raycast` and `world.query` find bodies along a line or inside a shape. Bodies don't rotate, and there are no joints: this is physics for platformers, top-down games and things that bounce, kept small. The same tests the world uses are there for games that would rather move things themselves: `Collide.overlap(a, b)`, `Collide.sweep(a, dx, dy, b)` and `Collide.resolve(a, b, bounce, friction)`.
 
 ## Speed
 
 Measured in Node on the same machine, spawning and updating 5,000 particles a frame: the old approach (one ECS entity per particle) took about 2.1 to 2.4 ms a frame, and `Particles` takes about 0.15 ms, 13 to 17 times faster. Particles also produce no garbage, so they don't cause GC pauses. With `overflow: 'replace'` a full system finds its oldest particle in constant time: at 8,192 particles with 300 new ones a frame, a frame takes about 0.4 ms, where the search 0.3 did took 2.2 ms.
 
 `SpatialHash.nearest` searches outwards cell by cell and stops when nothing farther can win. With 2,000 things on a 4,000 x 4,000 map, 2,000 searches take about 3 ms whatever the range; scanning every cell in range, as 0.2 did, took 9 ms at a range of 200, 84 ms at 1,000 and 950 ms across the whole map.
+
+`Physics.step` in Node: 500 circles crowding towards one point (about 900 contacts) take about 0.4 ms a step, 2,000 circles (4,000 contacts) about 3 ms, and a settled pile of 600 boxes and balls about 0.8 ms.
 
 ## Working on the engine
 

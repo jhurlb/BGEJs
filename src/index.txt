@@ -9,6 +9,7 @@ pool.js
 store.js
 collide.js
 spatial.js
+physics.js
 particles.js
 camera.js
 input.js
