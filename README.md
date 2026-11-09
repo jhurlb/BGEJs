@@ -99,6 +99,9 @@ cam.frame([p1, p2, boss], { padding: 80 });   // or keep several things in shot:
 cam.zoomTo(2, 0.4, Ease.outCubic);            // eased zoom
 cam.zoomAt(cam.zoom * 1.1, mouseX, mouseY);   // wheel zoom that keeps the point under the cursor still
 cam.moveTo(door.x, door.y, 1.2, { zoom: 1.5, hold: true, onDone: openDoor });   // a cutscene pan; cam.release() hands back to follow
+await cam.fit(arena, 1, { padding: 40, hold: true }).wait();   // or await it: show a whole rect, then carry on
+cam.follow(player, 0.001, { blend: 0.6 });    // glide back to the player instead of cutting
+cam.setBounds(nextRoom, 0.5);                 // slide into the next room's bounds
 
 cam.addTrauma(0.5);                           // shake that builds with each hit and dies away
 cam.kick(10, angle);                          // a push in one direction: recoil, a landing
@@ -106,6 +109,7 @@ cam.shakeFreq = 30; cam.shakeRoll = 0.03;     // smooth shake that looks the sam
 cam.shakeScale = settings.shake;              // one number for a "screen shake" option (0 = off)
 
 cam.apply(ctx, 0.5);                          // a background layer at half scroll speed
+drawHills(cam.layerView(0.5));                // and the part of that layer on screen, for culling it
 ```
 
 `follow()` and `frame()` take over from whatever the camera was doing; `snap()` jumps to where it is heading, for a respawn or a teleport. `cam.angle` turns the view, and conversions, bounds and the view rect all account for it. The full list is in the comment at the top of `src/camera.js`.

@@ -1,5 +1,5 @@
 'use strict';
-/* BGEjs 0.5.0: a small browser game engine. Built from src/ by scripts/bundle.js; edit src/, not this file. */
+/* BGEjs 0.6.0: a small browser game engine. Built from src/ by scripts/bundle.js; edit src/, not this file. */
 
 /* ---- src/core.js ---- */
 /* ================================================================
@@ -986,8 +986,11 @@ Particles.basic = sys => {
      cam.lead = 0.35;                      // look ahead: aim this many seconds in front of the target (its vx, vy if it has them, else measured)
      cam.leadMax = 240; cam.leadLag = 0.02;   // the furthest it leads, in world units, and how fast the lead swings round (as lag)
      cam.offset = { x: 0, y: -40 };        // aim this far from the target, in world units
+     cam.follow(boss, 0.001, { blend: 0.6, ease, vel });   // blend: glide over to the new target in 0.6 s instead of cutting, tracking it on the way.
+                                           // vel: read the lead's velocity from this { x, y } (an ECS Vel) instead of the target; it lasts until the next follow()
      cam.frame([p1, p2, boss], { padding: 80, minZoom: 0.25, maxZoom: 1, lag: 0.01 });   // keep several things in shot: centres on them and
-                                           // zooms to fit (their r counts). The list is read every update, so add and remove freely. zoom: false only centres
+                                           // zooms to fit (their r counts). The list is read every update, so add and remove freely. zoom: false only centres.
+                                           // With bounds set it zooms out no farther than it takes to show the whole world
      cam.snap();                           // jump straight to where the camera is heading (after a teleport or a respawn). During a moveTo it finishes the move
    A measured lead reads any jump of the aim point as speed, so call snap() after a teleport or after changing who is in a framed group.
 
@@ -996,7 +999,13 @@ Particles.basic = sys => {
      cam.zoomAt(cam.zoom * 1.1, mx, my);   // zoom now, keeping the world point under a screen point where it is (mouse wheel, pinch)
      cam.moveTo(x, y, 1.2, { ease, zoom: 1.5, hold: true, onDone });   // glide to a point; following waits until it arrives,
      cam.moving;  cam.held;  cam.release();                            // or with hold: true, until release(). follow() and frame() also cancel a move
+     cam.fit({ x0, y0, x1, y1 }, 1, { padding: 40, ease, hold, onDone });   // a moveTo that ends with the rect filling the view
+     cam.setBounds(room, 0.5, ease);       // new bounds, sliding into them over 0.5 s instead of jumping (room to room)
+     await cam.moveTo(x, y, 1).wait();     // wait() is a promise for the end of the first update with no move, zoom, blend or slide running
    Cancelling a move cancels its zoom too. A zoomTo or zoomAt replaces a zoom that is running, and the replaced one's onDone is not called.
+   A blend or a bounds slide only changes how the view gets there: following, moves and bounds carry on underneath and the view glides
+   from where it was to wherever they are. It runs out its time whatever else is called: snap() ends it early and a new blend or slide
+   starts again from the view as it is. Meanwhile cam.x, y are the gliding view, and a value written to them lasts only until the next update.
 
    Shake
      cam.addTrauma(0.5);                   // trauma squared x shakeMax pixels, trauma falls by shakeDecay per second
@@ -1008,7 +1017,8 @@ Particles.basic = sys => {
    Shake takes its random numbers from Rng.fx, so it never shifts gameplay randomness.
 
    Drawing
-     cam.apply(ctx, 0.5);                  // parallax: a layer that scrolls at half speed (cam.view is for the main layer only)
+     cam.apply(ctx, 0.5);                  // parallax: a layer that scrolls at half speed
+     cam.layerView(0.5, rect);             // what that layer shows, in its own coordinates, for culling it (cam.view is for the main layer only)
      cam.pixelSnap = true;                 // land the view on whole device pixels, for crisp pixel art
    ================================================================ */
 class Camera {
@@ -1019,20 +1029,22 @@ class Camera {
     this.amp = 0; this.kickDecay = 8; this.kickMax = 16; this.ox = 0; this.oy = 0; this.roll = 0;
     this.view = { x0: 0, y0: 0, x1: 0, y1: 0 };
     this._fit = null; this._mv = null; this._zt = null; this._gx = 0; this._gy = 0; this._gz = 1;
+    this.leadVel = null; this._bl = null; this._w = null;
     this._lx = 0; this._ly = 0; this._px = 0; this._py = 0; this._seen = false; this._kx = 0; this._ky = 0; this._n = [0, 0, 0, 0, 0, 0]; this._np = 1;
   }
-  follow(t, lag = 0){
-    this._stop(); this.target = t; this.lag = lag; this.group = this._fit = null; this._lead0();
-    if (t && !lag) { this.x = t.x; this.y = t.y; }
+  follow(t, lag = 0, o){
+    this._stop(); this.target = t; this.lag = lag; this.group = this._fit = null; this._lead0(); this.leadVel = (o && o.vel) || null;
+    if (t && o && o.blend > 0) { const f = this.offset; this._blend(o.blend, o.ease, t.x + (f ? f.x : 0), t.y + (f ? f.y : 0)); }
+    else if (t && !lag) this._put(t.x, t.y);
     return this;
   }
   frame(list, o = {}){
-    this._stop(); this.group = list; this.target = null; this.lag = o.lag ?? 0.01; this._lead0();
+    this._stop(); this.group = list; this.target = null; this.leadVel = null; this.lag = o.lag ?? 0.01; this._lead0();
     this._fit = o.zoom === false ? null : { pad: o.padding ?? 80, min: o.minZoom ?? 0.25, max: o.maxZoom ?? 1, lag: o.zoomLag ?? this.lag };
     return this;
   }
   snap(){
-    const m = this._mv;
+    const m = this._mv, bl = this._bl; if (bl) { this.x = bl.gx; this.y = bl.gy; this._bl = null; }   // a blend or a slide ends where it was going
     if (m) {   // heading for the end of a move: finish it
       const zt = m.zt && this._zt === m.zt ? m.zt : null;
       this.x = m.x1; this.y = m.y1; this._mv = null; this.held = m.hold; if (zt) { this.zoom = zt.z1; this._zt = null; }
@@ -1049,14 +1061,29 @@ class Camera {
   }
   zoomAt(z, sx, sy){
     const a = this.toWorld(sx, sy, Camera._p); const wx = a.x, wy = a.y; this.zoom = z; this._zt = null;
-    const b = this.toWorld(sx, sy, Camera._p); this.x += wx - b.x; this.y += wy - b.y;
+    const b = this.toWorld(sx, sy, Camera._p), dx = wx - b.x, dy = wy - b.y, bl = this._bl; this.x += dx; this.y += dy;
+    if (bl) { bl.x0 += dx; bl.y0 += dy; bl.gx += dx; bl.gy += dy; }   // both ends of a blend, so the view shifts by exactly this much
     return this;
   }
   moveTo(x, y, secs = 0.5, o = {}){
-    this._mv = { x0: this.x, y0: this.y, x1: x, y1: y, t: 0, d: secs, ease: o.ease || Camera.smooth, hold: !!o.hold, onDone: o.onDone || null };
+    const bl = this._bl;   // under a blend the move starts from where the camera really is, not from the gliding view
+    this._mv = { x0: bl ? bl.gx : this.x, y0: bl ? bl.gy : this.y, x1: x, y1: y, t: 0, d: secs, ease: o.ease || Camera.smooth, hold: !!o.hold, onDone: o.onDone || null };
     if (o.zoom != null) { this.zoomTo(o.zoom, secs, this._mv.ease); this._mv.zt = this._zt; }
     return this;
   }
+  fit(r, secs = 0.5, o = {}){
+    const co = Math.abs(Math.cos(this.angle)), si = Math.abs(Math.sin(this.angle)), w = Math.abs(r.x1 - r.x0), h = Math.abs(r.y1 - r.y0), p = (o.padding || 0) * 2;
+    const fw = w * co + h * si + p, fh = w * si + h * co + p, z = Math.min(fw > 0 ? vw / fw : Infinity, fh > 0 ? vh / fh : Infinity) / scale;
+    return this.moveTo((r.x0 + r.x1) / 2, (r.y0 + r.y1) / 2, secs, { ease: o.ease, hold: o.hold, onDone: o.onDone, zoom: z < Infinity ? z : null });
+  }
+  setBounds(b, secs = 0, ease){ this.bounds = b; if (secs > 0) this._blend(secs, ease); return this; }
+  wait(){ return new Promise(ok => { (this._w || (this._w = [])).push(ok); }); }
+  // A blend: the camera proper carries on unseen in gx, gy while x, y glide from where the view was to there.
+  _blend(secs, ease, gx, gy){
+    const bl = this._bl;
+    this._bl = { x0: this.x, y0: this.y, gx: gx ?? (bl ? bl.gx : this.x), gy: gy ?? (bl ? bl.gy : this.y), t: 0, d: secs, ease: ease || Camera.smooth };
+  }
+  _put(x, y){ const bl = this._bl; if (bl) { bl.gx = x; bl.gy = y; } else { this.x = x; this.y = y; } }
   release(){ this._stop(); this._lead0(); return this; }
   _stop(){ const m = this._mv; if (m && m.zt && this._zt === m.zt) this._zt = null; this._mv = null; this.held = false; }   // a move takes its zoom with it
   get moving(){ return !!this._mv; }
@@ -1082,13 +1109,16 @@ class Camera {
       const o = this.offset, w = x1 - x0, h = y1 - y0, co = Math.abs(Math.cos(this.angle)), si = Math.abs(Math.sin(this.angle));
       const ox = o ? Math.abs(o.x) : 0, oy = o ? Math.abs(o.y) : 0;
       const fw = w * co + h * si + (ox * co + oy * si + f.pad) * 2, fh = w * si + h * co + (ox * si + oy * co + f.pad) * 2;
-      const z = clamp(Math.min(fw > 0 ? vw / fw : Infinity, fh > 0 ? vh / fh : Infinity) / scale, f.min, f.max);
+      let z = clamp(Math.min(fw > 0 ? vw / fw : Infinity, fh > 0 ? vh / fh : Infinity) / scale, f.min, f.max);
+      const b = this.bounds;   // no farther out than it takes to show the whole world, when maxZoom allows that
+      if (b) z = Math.max(z, Math.min(f.max, Math.min((vw * co + vh * si) / (b.x1 - b.x0), (vw * si + vh * co) / (b.y1 - b.y0)) / scale));
       this._gz = z < Infinity ? z : this.zoom;   // a single point with no padding and no top limit: nothing to fit, so stay as it is
     }
     return true;
   }
   update(dt){
-    const m = this._mv, zt = this._zt;
+    const m = this._mv, zt = this._zt, bl = this._bl;
+    if (bl) { this.x = bl.gx; this.y = bl.gy; }
     if (m) {
       m.t = m.d > 0 ? Math.min(1, m.t + dt / m.d) : 1; const e = m.ease(m.t);
       this.x = lerp(m.x0, m.x1, e); this.y = lerp(m.y0, m.y1, e);
@@ -1096,9 +1126,9 @@ class Camera {
     } else if (!this.held && this._aim()) {
       let gx = this._gx, gy = this._gy;
       if (this.lead) {
-        const t = this.target, own = t && typeof t.vx === 'number' && typeof t.vy === 'number';
+        const t = this.target, lv = this.leadVel, own = lv || (t && typeof t.vx === 'number' && typeof t.vy === 'number');
         if (own || (dt > 0 && this._seen)) {
-          let lx = (own ? t.vx : (gx - this._px) / dt) * this.lead, ly = (own ? t.vy : (gy - this._py) / dt) * this.lead; const l = Math.hypot(lx, ly);
+          let lx = (lv ? lv.x : own ? t.vx : (gx - this._px) / dt) * this.lead, ly = (lv ? lv.y : own ? t.vy : (gy - this._py) / dt) * this.lead; const l = Math.hypot(lx, ly);
           if (l > this.leadMax) { lx *= this.leadMax / l; ly *= this.leadMax / l; }
           this._lx = damp(this._lx, lx, this.leadLag, dt); this._ly = damp(this._ly, ly, this.leadLag, dt);
         }
@@ -1125,6 +1155,10 @@ class Camera {
       this.x = b.x1 - b.x0 < hw * 2 ? (b.x0 + b.x1) / 2 : clamp(this.x, b.x0 + hw, b.x1 - hw);
       this.y = b.y1 - b.y0 < hh * 2 ? (b.y0 + b.y1) / 2 : clamp(this.y, b.y0 + hh, b.y1 - hh);
     }
+    if (bl && this._bl === bl) {
+      bl.gx = this.x; bl.gy = this.y; bl.t = Math.min(1, bl.t + dt / bl.d);
+      if (bl.t >= 1) this._bl = null; else { const e = bl.ease(bl.t); this.x = lerp(bl.x0, bl.gx, e); this.y = lerp(bl.y0, bl.gy, e); }
+    }
     this.trauma = Math.max(0, this.trauma - this.shakeDecay * dt);
     const kd = Math.exp(-this.kickDecay * dt);
     this.amp *= kd; if (this.amp < 0.01) this.amp = 0;
@@ -1145,6 +1179,7 @@ class Camera {
     v.x0 = this.x - hw - pad; v.x1 = this.x + hw + pad; v.y0 = this.y - hh - pad; v.y1 = this.y + hh + pad;
     if (m && !this._mv && m.onDone) m.onDone(this);
     if (zt && zt.t >= 1 && zt.onDone) zt.onDone(this);
+    if (this._w && !this._mv && !this._zt && !this._bl) { const w = this._w; this._w = null; for (let i = 0; i < w.length; i++) w[i](); }
   }
   apply(c, parallax = 1){
     const k = this.k * dpr, a = -(this.angle + this.roll), co = Math.cos(a) * k, si = Math.sin(a) * k, x = this.x * parallax, y = this.y * parallax;
@@ -1153,6 +1188,10 @@ class Camera {
     c.setTransform(co, si, -si, co, e, f);
   }
   applyScreen(c){ c.setTransform(dpr, 0, 0, dpr, 0, 0); }
+  layerView(parallax = 1, out = {}){
+    const v = this.view, hw = (v.x1 - v.x0) / 2, hh = (v.y1 - v.y0) / 2, x = this.x * parallax, y = this.y * parallax;
+    out.x0 = x - hw; out.y0 = y - hh; out.x1 = x + hw; out.y1 = y + hh; return out;
+  }
   inView(x, y, m = 0){ const v = this.view; return x > v.x0 - m && x < v.x1 + m && y > v.y0 - m && y < v.y1 + m; }
   toWorld(sx, sy, out = {}){
     const u = (sx - vw / 2) / this.k, v = (sy - vh / 2) / this.k, co = Math.cos(this.angle), si = Math.sin(this.angle);

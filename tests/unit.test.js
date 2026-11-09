@@ -750,3 +750,58 @@ test('Camera: lead switched off forgets the old position; zoom from 0 and a one-
   for (const o of [a, b]) { const s = t.toScreen(o.x, o.y); assert.ok(s.y > -1e-6 && s.y < 600 + 1e-6, `off screen at y ${s.y}`); }
   t.angle = 0; t.offset = { x: 300, y: 0 }; t.update(0.016); assert.ok(t.toScreen(0, 0).x > -1e-6 && t.toScreen(2000, 0).x < 800 + 1e-6);
 });
+
+// ---- 0.6.0: camera
+
+test('Camera: follow with blend glides to the new target and keeps tracking it on the way', () => {
+  const a = { x: 0, y: 0 }, b = { x: 1000, y: 0 }, lin = t => t, cam = new X.Camera().follow(a); cam.update(0.016);
+  cam.follow(b, 0, { blend: 1, ease: lin }); near(cam.x, 0);
+  cam.update(0.25); near(cam.x, 250); cam.update(0.25); near(cam.x, 500);
+  b.x = 2000; cam.update(0.25); near(cam.x, 1500);                                  // three quarters of the way to where it is now
+  cam.update(0.25); near(cam.x, 2000); b.x = 2100; cam.update(0.016); near(cam.x, 2100);
+  cam.follow(a, 0, { blend: 1 }); cam.update(0.5); near(cam.x, 1050);               // smoothstep by default
+  { const o = new X.Camera(); o.offset = { x: 0, y: -100 }; o.follow(a, 0.001, { blend: 0.5 }); o.update(0.5); near(o.y, -100); }   // a blend ends on the offset point, with nothing left to settle
+  const c = { x: 100, y: 0 }; cam.follow(c); cam.update(0.25); near(cam.x, 2100 + (100 - 2100) * 0.84375);   // a blend runs out its time: another follow only changes where it ends
+  cam.snap(); near(cam.x, 100); cam.update(0.1); near(cam.x, 100);                  // snap() ends it
+  cam.x = 2100; cam.follow(a, 0, { blend: 1, ease: lin }); cam.update(0.5); near(cam.x, 1050); cam.moveTo(100, 0, 0); cam.update(0.25); near(cam.x, 600);
+  cam.update(1); near(cam.x, 0);                                                    // the move arrived under the blend and following took over again
+  cam.follow(null); cam.x = 0; cam.zoom = 1; cam.setBounds(null, 1, lin); cam.update(0.5); const w0 = cam.toWorld(650, 120); cam.zoomAt(2, 650, 120);
+  let w = cam.toWorld(650, 120); near(w.x, w0.x); cam.update(0.25); w = cam.toWorld(650, 120); near(w.x, w0.x); near(w.y, w0.y);   // zoomAt holds its point through a blend
+});
+
+test('Camera: setBounds slides into the new room; fit shows a rect; wait() resolves when the camera is idle', async () => {
+  const p = { x: 300, y: 300 }, lin = t => t, cam = new X.Camera(); cam.zoom = 1 / cam.k;   // 1 world unit = 1 pixel: the view is 800 x 600
+  cam.bounds = { x0: 0, y0: 0, x1: 1000, y1: 600 }; cam.follow(p); cam.update(0.016); near(cam.x, 400); near(cam.y, 300);
+  p.x = 1100; assert.strictEqual(cam.setBounds({ x0: 1000, y0: 0, x1: 2000, y1: 600 }, 1, lin), cam);
+  let idle = 0; cam.wait().then(() => idle++);
+  cam.update(0.5); near(cam.x, 900); near(cam.view.x0, 500); await null; assert.strictEqual(idle, 0);   // halfway from 400 to 1400, and the view rect goes with it
+  cam.update(0.5); near(cam.x, 1400); await null; assert.strictEqual(idle, 1);
+  cam.setBounds({ x0: 0, y0: 0, x1: 2000, y1: 600 }); cam.update(0.016); near(cam.x, 1100);   // no time: at once
+  cam.bounds = null; cam.follow(null);
+  cam.fit({ x0: 0, y0: 0, x1: 400, y1: 100 }, 1, { padding: 50, ease: lin, hold: true }); assert.ok(cam.moving);
+  cam.update(0.5); near(cam.x, (1100 + 200) / 2); setTimeout(() => cam.update(0.5), 0); await cam.wait();
+  near(cam.x, 200); near(cam.y, 50); near(cam.view.x0, -50); near(cam.view.x1, 450); assert.ok(cam.view.y0 < -50 && cam.view.y1 > 150 && cam.held);
+  let done = 0; cam.fit({ x0: 10, y0: 10, x1: 10, y1: 10 }, 0, { onDone: () => done++ }); const z = cam.zoom; cam.update(0);
+  near(cam.x, 10); assert.strictEqual(cam.zoom, z); assert.strictEqual(done, 1);    // a point with no padding: move only
+  cam.fit({ x0: 400, y0: 100, x1: 0, y1: 0 }, 0, { padding: 50 }); cam.update(0); near(cam.view.x0, -50); near(cam.view.x1, 450);   // a rect given backwards
+  cam.angle = Math.PI / 2; cam.fit({ x0: 0, y0: 0, x1: 100, y1: 1200 }, 0); cam.update(0); near(cam.k, 800 / 1200);   // turned a quarter: the screen's width runs along world y
+  setTimeout(() => cam.update(0), 0); await cam.wait();                             // nothing running: the next update
+  cam.zoomTo(2, 1); let zd = 0; cam.wait().then(() => zd++); cam.update(0.5); await null; assert.strictEqual(zd, 0); cam.update(0.5); await null; assert.strictEqual(zd, 1);
+});
+
+test('Camera: leadVel, layerView, and framing that never zooms out past the world', () => {
+  const p = { x: 0, y: 0, vx: 999, vy: 999 }, v = { x: -100, y: 40 }, cam = new X.Camera(); cam.lead = 0.5; cam.leadLag = 0;
+  cam.follow(p, 0, { vel: v }); cam.update(0.016); near(cam.x, -50); near(cam.y, 20);   // the given velocity wins over the target's own
+  cam.follow(p, 0); assert.strictEqual(cam.leadVel, null); cam.frame([p]); assert.strictEqual(cam.leadVel, null);
+  cam.lead = 0; cam.follow(null); cam.x = 1000.5; cam.y = 400; cam.update(0);
+  const r = cam.layerView(0.5), out = {}; near((r.x0 + r.x1) / 2, 500.25); near(r.x1 - r.x0, cam.view.x1 - cam.view.x0); near((r.y0 + r.y1) / 2, 200);
+  assert.strictEqual(cam.layerView(0, out), out); near(out.x0, cam.view.x0 - cam.x);
+  { const l = cam.layerView(); near(l.x0, cam.view.x0); near(l.x1, cam.view.x1); near(l.y0, cam.view.y0); near(l.y1, cam.view.y1); }                                                    // no argument: the main layer
+  const a = { x: 0, y: 0 }, b = { x: 1e6, y: 0 }; cam.bounds = { x0: -200, y0: -150, x1: 1200, y1: 900 };
+  cam.frame([a, b], { lag: 0, padding: 0, minZoom: 0.001, maxZoom: 2 }); cam.update(0.016); near(cam.view.x0, -200); near(cam.view.x1, 1200);
+  cam.bounds = { x0: 0, y0: 0, x1: 2000, y1: 600 }; a.x = 50; a.y = b.y = 300; b.x = 1950; cam.frame([a, b], { lag: 0, padding: 20, minZoom: 0.001, maxZoom: 2 }); cam.update(0.016);   // a corridor: both ends stay in shot
+  assert.ok(cam.inView(a.x, a.y) && cam.inView(b.x, b.y)); near(cam.view.x0, 30); b.x = 1e6; cam.update(0.016); near(cam.view.x0, 0); near(cam.view.x1, 2000);
+  b.x = 1e6; b.y = 0; a.x = a.y = 0; cam.bounds = { x0: -200, y0: -150, x1: 1200, y1: 900 }; cam.frame([a, b], { lag: 0, padding: 0, minZoom: 0.001, maxZoom: 2 });
+  cam.frame([a, b], { lag: 0, padding: 0, minZoom: 0.001, maxZoom: 0.5 }); cam.update(0.016); near(cam.zoom, 0.5);   // unless maxZoom forbids going that close
+  cam.bounds = { x0: 0, y0: 0, x1: 0, y1: 0 }; cam.frame([a, b], { lag: 0, minZoom: 0.25 }); cam.update(0.016); assert.ok(cam.zoom > 0 && cam.zoom <= 1);   // a world with no size stays finite
+});

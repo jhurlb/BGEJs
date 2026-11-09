@@ -56,7 +56,7 @@ function pulse(){
   for (const o of hash.within(ship.x, ship.y, R, [])) popOrb(o);   // its own array: popOrb spawns, and the shared one may be reused
 }
 Events.on('shipHit', o => {
-  lives--; ship.inv = 1.5; cam.addTrauma(0.8); Loop.hitstop(0.12); Sound.play('hurt');
+  lives--; ship.inv = 1.5; cam.addTrauma(0.8); cam.kick(12, Math.atan2(ship.y - o.y, ship.x - o.x)); Loop.hitstop(0.12); Sound.play('hurt');   // shake, and a shove away from the orb
   fx.play('explosion', ship.x, ship.y, { scale: 0.8 });
   popOrb(o);
   if (lives <= 0) clock.after(0.6, () => Scenes.push('over'));

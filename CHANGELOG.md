@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.6.0
+
+More camera. Everything in 0.5 works the same, with one change to framing noted below.
+
+### Added
+
+- **Blended follow.** `cam.follow(boss, 0.001, { blend: 0.6 })` glides over to a new target in 0.6 s instead of cutting, and keeps tracking it on the way, so it lands on a target that moved. `ease` picks the curve.
+- **Room to room.** `cam.setBounds(room, 0.5)` swaps the bounds and slides the view into them instead of jumping.
+- **`cam.fit(rect, seconds, { padding, ease, hold, onDone })`**: a `moveTo` that ends with the rect filling the view, at any `angle`.
+- **`cam.wait()`** is a promise for the end of the first update with no move, zoom, blend or slide running, so a cutscene can be written in order: `await cam.moveTo(x, y, 1, { hold: true }).wait();`
+- **Look-ahead from a separate velocity.** `cam.follow(pos, lag, { vel })` reads the lead's velocity from any `{ x, y }`, such as an ECS `Vel`, when the target itself is only a position. It lasts until the next `follow()`; `cam.leadVel` is the field.
+- **`cam.layerView(0.5)`** is the rect a parallax layer shows, for culling what is drawn with `cam.apply(ctx, 0.5)`.
+- Orb Sweep shoves the camera away from the orb that hits the ship.
+
+### Changes to check when upgrading
+
+- `frame()` with `bounds` set zooms out no farther than it takes to show the whole world (or stops at `maxZoom`, when that is closer). Before, a group spread wider than the world shrank the world to a patch in the middle of the screen.
+- The camera has a new property `leadVel` and new methods `fit`, `setBounds`, `wait` and `layerView`. `follow()` takes a third argument.
+- While a blend or a bounds slide runs, `cam.x, y` are the gliding view and a value written to them lasts only until the next update. Use `snap()` first, or `moveTo`.
+
 ## 0.5.0
 
 The camera. Everything that worked in 0.4 works the same: `follow`, `addTrauma`, `kick`, `bounds`, `view` and the conversions need no changes.

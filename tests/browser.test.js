@@ -33,6 +33,25 @@ test('Loop runs update and render, and hitstop and timeScale work', async () => 
   assert.deepStrictEqual(pg.errors, []);
 });
 
+test('Camera on a real canvas: a turned, zoomed, parallax view draws where toScreen says', async () => {
+  const pg = await page();
+  await pg.goto(`${srv.base}tests/blank.html`);
+  const r = await pg.evaluate(async () => {
+    const cam = new Camera(), lit = (x, y) => ctx.getImageData(Math.round(x * dpr), Math.round(y * dpr), 1, 1).data[0] > 200;
+    const dot = (wx, wy, p) => { ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.fillStyle = '#000'; ctx.fillRect(0, 0, cv.width, cv.height); cam.apply(ctx, p); ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.arc(wx, wy, 6 / cam.k, 0, TAU); ctx.fill(); };
+    cam.x = 300; cam.y = -120; cam.zoom = 1.7; cam.angle = 0.9; cam.update(0);
+    const s = cam.toScreen(380, -60); dot(380, -60);
+    const turned = lit(s.x, s.y) && !lit(s.x + 20, s.y) && !lit(s.x, s.y - 20);
+    cam.angle = 0; cam.update(0); dot(150 + 40, -60 + 30, 0.5);                    // a half-speed layer is centred on half the camera's position
+    const layer = lit(vw / 2 + 40 * cam.k, vh / 2 + 30 * cam.k);
+    let t = 0; const tick = setInterval(() => { t += 0.05; cam.update(0.05); }, 5);
+    await cam.moveTo(500, 0, 0.3, { zoom: 1 }).wait(); clearInterval(tick);        // a cutscene step, awaited
+    return { turned, layer, x: cam.x, zoom: cam.zoom, t: Math.round(t * 100) / 100, onScreen: s.x > 0 && s.x < vw && s.y > 0 && s.y < vh };
+  });
+  assert.deepStrictEqual(r, { turned: true, layer: true, x: 500, zoom: 1, t: 0.3, onScreen: true });
+  assert.deepStrictEqual(pg.errors, []);
+});
+
 test('Orb Sweep: title, play, pulse pops orbs, game over', async () => {
   const pg = await page();
   await pg.goto(`${srv.base}examples/orb-sweep/index.html`);
