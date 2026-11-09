@@ -1,5 +1,34 @@
 # Changelog
 
+## 0.8.0
+
+Tile maps, text, and types for your editor. Everything that worked in 0.7 works the same.
+
+### Added
+
+- **`Tilemap`: levels as grids of tiles** (new file `tilemap.js`). Make one from rows of characters (`Tilemap.from(['###', '#P#'], 40, { '#': 1 })`, where characters that are not tiles become `map.marks`: where to put the player, the coins), by hand (`new Tilemap(cols, rows, size)`, `set`, `fill`), or from a map saved by the Tiled editor (`Tilemap.tiled(json)`: tile layers, object layers, custom tile properties, animations).
+  - **Drawing.** `map.draw(ctx, cam.view)` draws only the tiles on screen, from a sprite sheet (`map.sheet`), a function of your own (`map.paint`), or plain colours. Layers draw together or one at a time, so actors can go between a back and a front. `map.prerender = 16` draws the level once into cached pictures and stamps those: far fewer draw calls, and no hairlines between tiles when the camera sits at a fraction of a pixel. `set()` repaints only the picture it touched.
+  - **Colliding without a physics world.** `map.move(box, dx, dy)` moves a box or circle and stops it at the walls, returning the sides that hit (1 left, 2 right, 4 top, 8 bottom, as `touch` and `clampToBox` do). It checks every tile the leading edge crosses, so no speed skips a wall. One-way platforms are landed on from above.
+  - **With Physics.** `map.addTo(world)` hands the walls to a `Physics` world as fixed bodies, joined into as few boxes as will do (Tumble's 150 or so tiles become 23 bodies), with one-way runs and a polygon for each slope tile.
+  - **Rays and paths.** `map.raycast(ox, oy, dx, dy, max)` gives the distance to the first wall, the tile in `map.hit` and the normal in `Collide.nx / ny`; `map.sees(ax, ay, bx, by)` is line of sight. `map.path(ax, ay, bx, by)` is A* round the walls, with diagonals that never cut a corner, a `cost` function for ground that is dearer to cross, and a cap on the work so a far goal cannot stall a frame.
+  - `map.def(id, { solid, oneWay, pts, color, frame, frames, fps, draw, body })` says what a tile is. With nothing said, every tile but 0 is a solid block.
+- **`Txt`: text on the canvas** (new file `text.js`; `Text` already belongs to the browser). `Txt.draw(ctx, 'Score 120', x, y, { size, color, outline, shadow, align, valign, width, angle, scale })` with wrapping at a width and alignment on both axes. A layout is worked out once and remembered, so the same line drawn every frame measures nothing.
+  - **Coloured words**: `{ rich: true }` reads `'Take the {#fd5}gold key{/}'`, with names of your own in `Txt.colors`.
+  - **Typewriter**: `reveal: n` shows the first n characters, with every word already where it will end up, so nothing jumps as a line fills.
+  - **Named styles**: `Txt.style('hud', { ... })`, then `Txt.draw(ctx, s, x, y, 'hud')` or `{ style: 'hud', size: 30 }`.
+  - **Bitmap fonts** for pixel art: `Txt.bitmap(image, 8, 8, 'ABC...')`, tinted to any colour, with narrow letters and an upper-case-only option.
+  - **Floating numbers**: `Txt.pop('-25', x, y, { color })` rises, swells and fades by itself; `Txt.update(dt)` and `Txt.drawPops(ctx, cam.view)` run them.
+- **Scenes fade.** `Scenes.go('play', args, 0.5)` fades out, switches behind the cover and fades back in; `push` and `pop` take the same last argument, as seconds or `{ fade, color, draw(c, k), freeze }`. The scene on top is not updated while the cover closes, so a press cannot land twice. `Scenes.busy` says a fade is running.
+- **Type declarations: `dist/bge.d.ts`.** Every global in the engine, for autocomplete and hints in editors that read TypeScript (VS Code does). Copy it beside `bge.js` and start your game file with `/// <reference path="bge.d.ts" />`. The engine is still plain JavaScript with no build step. A test compares the declarations with the running engine name by name, in both directions, and compiles a sample game against them, so they cannot fall behind.
+- `examples/delve`: a top-down dungeon on a tile map, with ghosts that see and path-find, a typed-out intro and scenes that fade.
+- Tumble builds its level with `Tilemap` and `map.addTo(world)`, and draws its HUD and coin pops with `Txt`.
+
+### Changes to check when upgrading
+
+- `Tilemap` and `Txt` are new global names.
+- `Scenes` has a new property `fade` and a getter `busy`; `go` and `push` take a third argument and `pop` a first. A scene named in a fading `go` is still checked at once, so a typo throws before anything fades.
+- `npm run bundle` now also writes `dist/bge.d.ts`, and `npm test` needs the `typescript` dev dependency (only the tests use it).
+
 ## 0.7.0
 
 Physics. Nothing that existed has changed its behaviour, apart from the one fix below.
