@@ -1,264 +1,233 @@
 'use strict';
 /* ================================================================
-   CAMERA: a 2D view onto the world: follow, framing a group, zoom, rotation, pans and screen shake.
+   CAMERA: a 2D view onto the world with follow, framing, zoom, rotation, scripted moves and screen shake.
      const cam = new Camera();             // uses the core globals vw, vh, dpr, scale
-     cam.update(dt);  cam.apply(ctx);      // once per update; apply sets the canvas transform, draw the world after it
+     cam.update(dt);  cam.apply(ctx);      // sets the canvas transform; draw the world after this
      cam.applyScreen(ctx);                 // back to CSS-pixel space for the HUD
      cam.view                              // { x0, y0, x1, y1 } visible world rect (for culling and Particles.draw), widened while shaking
-     cam.inView(x, y, margin);  cam.toWorld(sx, sy);  cam.toScreen(wx, wy);   // screen = CSS pixels; both take an optional object to fill
-   x, y is the world point at the centre of the screen. zoom multiplies the core `scale`. rot turns the camera (radians).
-   bounds = { x0, y0, x1, y1 } keeps the view inside the world; a world smaller than the view is centred.
+     cam.inView(x, y, margin);  cam.toWorld(sx, sy);  cam.toScreen(wx, wy);   // screen = CSS pixels; pass an object as a last argument to reuse it
+   zoom multiplies the core `scale`; angle (radians) turns the view. bounds = { x0, y0, x1, y1 } keeps the view inside the world.
 
-   FOLLOW ONE THING
-     cam.follow(player, 0.001);            // the number is the share of the gap left after 1 s (0 = locked on)
-     cam.follow(player, 0.001, {
-       deadzone: { w: 120, h: 80 },        // the target moves freely in a box this big (world units; a number = square) before the camera does
-       lookAhead: 0.35, lookMax: 160,      // lead the target by 0.35 s of its velocity, at most 160 world units
-       lookLag: 0.02,                      // how fast the lead swings round (share left after 1 s; 0 = at once)
-       vel: velComponent,                  // where to read the velocity: { x, y }. Without it: target.vx / vy, else measured from its movement
-       offset: { x: 0, y: -60 },           // aim at a point beside the target (above a platformer's hero)
-       blend: 0.6, ease: 'inOutCubic',     // glide over from the current view in 0.6 s instead of cutting
-     });
-     cam.snap();                           // jump to where the follow rests (after a respawn or a teleport)
-     cam.follow(null);                     // stop following
-   The options are also plain fields (cam.deadzone, cam.lookAhead, cam.lookMax, cam.lookLag, cam.lookVel, cam.offset.x / y):
-   an option you leave out keeps its value, except `vel`, which belongs to the target and is forgotten on every follow().
+   Following
+     cam.follow(player, 0.001);            // track a target; the number is the share of the gap left after 1 s (0 = snap)
+     cam.deadzone = { w: 120, h: 80 };     // world units: the target moves freely inside this box and the camera only moves when it leaves
+     cam.lead = 0.35;                      // look ahead: aim this many seconds in front of the target (its vx, vy if it has them, else measured)
+     cam.leadMax = 240; cam.leadLag = 0.02;   // the furthest it leads, in world units, and how fast the lead swings round (as lag)
+     cam.offset = { x: 0, y: -40 };        // aim this far from the target, in world units
+     cam.follow(boss, 0.001, { blend: 0.6, ease, vel });   // blend: glide over to the new target in 0.6 s instead of cutting, tracking it on the way.
+                                           // vel: read the lead's velocity from this { x, y } (an ECS Vel) instead of the target; it lasts until the next follow()
+     cam.frame([p1, p2, boss], { padding: 80, minZoom: 0.25, maxZoom: 1, lag: 0.01 });   // keep several things in shot: centres on them and
+                                           // zooms to fit (their r counts). The list is read every update, so add and remove freely. zoom: false only centres.
+                                           // With bounds set it never zooms out past the world (unless maxZoom says the world is too small to fill the view)
+     cam.snap();                           // jump straight to where the camera is heading (after a teleport or a respawn). During a moveTo it finishes the move
+   A measured lead reads any jump of the aim point as speed, so call snap() after a teleport or after changing who is in a framed group.
 
-   FRAME A GROUP
-     cam.frame(players, 0.01, { margin: 80, minZoom: 0.4, maxZoom: 1 });
-   Centres on a list of { x, y, r? } and zooms so that all of them fit with `margin` world units to spare. The list is read
-   on every update, so add to it and remove from it freely; an empty list holds the view. zoomLag (default: the lag) smooths
-   the zoom. With bounds set it never zooms out past the world. Fields: cam.targets, cam.frameMargin, cam.frameMin, cam.frameMax, cam.zoomLag.
+   Zoom and scripted moves
+     cam.zoomTo(2, 0.4, Ease.outCubic);    // zoom over 0.4 s (0 = now); following carries on meanwhile
+     cam.zoomAt(cam.zoom * 1.1, mx, my);   // zoom now, keeping the world point under a screen point where it is (mouse wheel, pinch)
+     cam.moveTo(x, y, 1.2, { ease, zoom: 1.5, hold: true, onDone });   // glide to a point; following waits until it arrives,
+     cam.moving;  cam.held;  cam.release();                            // or with hold: true, until release(). follow() and frame() also cancel a move
+     cam.fit({ x0, y0, x1, y1 }, 1, { padding: 40, ease, hold, onDone });   // a moveTo that ends with the rect filling the view
+     cam.setBounds(room, 0.5, ease);       // new bounds, sliding into them over 0.5 s instead of jumping (room to room)
+     await cam.moveTo(x, y, 1).wait();     // wait() is a promise for the end of the first update with no move, zoom, blend or slide running
+   Cancelling a move cancels its zoom too. A zoomTo or zoomAt replaces a zoom that is running, and the replaced one's onDone is not called.
+   A blend or a bounds slide only changes how the view gets there: following, moves and bounds carry on underneath and the view glides
+   from where it was to wherever they are. It runs out its time whatever else is called; only snap() ends it early.
 
-   PANS AND ZOOMS (for cutscenes, rooms and strategy maps)
-     cam.moveTo(x, y, 0.8, 'outCubic');    // stop following and glide to a point
-     cam.zoomTo(2, 0.5);                   // zoom over 0.5 s
-     cam.zoomAt(cam.zoom * 1.1, mx, my);   // zoom keeping the world point under a screen point still (mouse wheel)
-     cam.fit({ x0, y0, x1, y1 }, 1, 'inOutCubic', 40);   // move and zoom to show a rect, with a margin
-     cam.setBounds(room, 0.5);             // new bounds, sliding into them instead of jumping (room to room)
-   Seconds default to 0 (at once). An ease is a function or a name from Ease (default: smoothstep). Each returns a handle with
-   cancel() and then(fn) that can be awaited: `await cam.moveTo(boss.x, boss.y, 1); cam.follow(player, 0.001, { blend: 0.5 });`
-   A cancelled or replaced move never resolves. zoomTo, zoomAt and fit keep zoom within cam.zoomMin .. cam.zoomMax.
+   Shake
+     cam.addTrauma(0.5);                   // trauma squared x shakeMax pixels, trauma falls by shakeDecay per second
+     cam.kick(6);                          // a direct jolt in pixels that dies away exponentially (kickDecay per second)
+     cam.kick(10, angle);                  // a push in one direction that settles back: recoil, a landing, a hit from the left
+     cam.shakeRoll = 0.05;                 // trauma also rolls the view, up to this many radians
+     cam.shakeFreq = 30;                   // smooth shake at about this many wobbles a second, the same at any frame rate (0 = a new offset every update)
+     cam.shakeScale = 0.5;                 // scales every shake; set it from a "screen shake" or reduced-motion setting (0 = none)
+   Shake takes its random numbers from Rng.fx, so it never shifts gameplay randomness.
 
-   SHAKE
-     cam.addTrauma(0.5);                   // shake: trauma squared x shakeMax pixels, trauma falls by shakeDecay per second
-     cam.kick(6);                          // a jolt in pixels that dies away (kickDecay per second); the bigger of two jolts wins
-     cam.kick(6, angle);                   // a shove toward `angle` that settles back (recoil, a hit from one side); shoves add up to kickMax
-     cam.shakeFreq = 30;                   // wobbles per second: a smooth shake that looks the same at any frame rate (0 = a new random offset each update)
-     cam.shakeRot = 0.04;                  // also roll by up to this many radians at full trauma
-
-   LAYERS AND PIXELS
-     cam.apply(ctx, 0.5);                  // parallax: a layer that moves at half the camera's speed (0 = fixed, 1 = the world)
-     cam.layerView(0.5, rect);             // the visible rect in that layer's coordinates
-     cam.pixelSnap = true;                 // round the view to whole device pixels (crisp pixel art; ignored while rotated)
+   Drawing
+     cam.apply(ctx, 0.5);                  // parallax: a layer that scrolls at half speed
+     cam.layerView(0.5, rect);             // what that layer shows, in its own coordinates, for culling it (cam.view is for the main layer only)
+     cam.pixelSnap = true;                 // land the view on whole device pixels, for crisp pixel art
    ================================================================ */
 class Camera {
   constructor(){
-    this.x = 0; this.y = 0; this.zoom = 1; this.rot = 0; this.target = null; this.lag = 0; this.bounds = null;
-    this.deadzone = null; this.offset = { x: 0, y: 0 }; this.lookAhead = 0; this.lookMax = 160; this.lookLag = 0.02; this.lookVel = null; this.lx = 0; this.ly = 0;
-    this.targets = null; this.frameMargin = 80; this.frameMin = 0.25; this.frameMax = 1; this.zoomLag = 0;
-    this.zoomMin = 0.05; this.zoomMax = 20; this.pixelSnap = false;
-    this.trauma = 0; this.shakeMax = 16; this.shakeDecay = 1.6; this.shakeFreq = 0; this.shakeRot = 0;
-    this.amp = 0; this.kickDecay = 8; this.kickMax = 16; this.jx = 0; this.jy = 0; this.ox = 0; this.oy = 0; this.orot = 0;
+    this.x = 0; this.y = 0; this.zoom = 1; this.angle = 0; this.target = null; this.lag = 0; this.bounds = null;
+    this.group = null; this.deadzone = null; this.offset = null; this.lead = 0; this.leadMax = 240; this.leadLag = 0.02; this.held = false; this.pixelSnap = false;
+    this.trauma = 0; this.shakeMax = 16; this.shakeDecay = 1.6; this.shakeRoll = 0; this.shakeFreq = 0; this.shakeScale = 1;
+    this.amp = 0; this.kickDecay = 8; this.kickMax = 16; this.ox = 0; this.oy = 0; this.roll = 0;
     this.view = { x0: 0, y0: 0, x1: 0, y1: 0 };
-    this._pan = null; this._zt = null; this._pt = null; this._px = 0; this._py = 0; this._st = 0;
+    this._fit = null; this._mv = null; this._zt = null; this._gx = 0; this._gy = 0; this._gz = 1;
+    this.leadVel = null; this._bl = null; this._w = null;
+    this._lx = 0; this._ly = 0; this._px = 0; this._py = 0; this._seen = false; this._kx = 0; this._ky = 0; this._n = [0, 0, 0, 0, 0, 0]; this._np = 1;
+  }
+  follow(t, lag = 0, o){
+    this._stop(); this.target = t; this.lag = lag; this.group = this._fit = null; this._lead0(); this.leadVel = (o && o.vel) || null;
+    if (t && o && o.blend > 0) this._blend(o.blend, o.ease, t.x, t.y);
+    else if (t && !lag) this._put(t.x, t.y);
+    return this;
+  }
+  frame(list, o = {}){
+    this._stop(); this.group = list; this.target = null; this.leadVel = null; this.lag = o.lag ?? 0.01; this._lead0();
+    this._fit = o.zoom === false ? null : { pad: o.padding ?? 80, min: o.minZoom ?? 0.25, max: o.maxZoom ?? 1, lag: o.zoomLag ?? this.lag };
+    return this;
+  }
+  snap(){
+    const m = this._mv, bl = this._bl; if (bl) { this.x = bl.gx; this.y = bl.gy; this._bl = null; }   // a blend or a slide ends where it was going
+    if (m) {   // heading for the end of a move: finish it
+      const zt = m.zt && this._zt === m.zt ? m.zt : null;
+      this.x = m.x1; this.y = m.y1; this._mv = null; this.held = m.hold; if (zt) { this.zoom = zt.z1; this._zt = null; }
+      if (m.onDone) m.onDone(this);
+      return this;
+    }
+    this._lead0();
+    if (!this.held && this._aim()) { const o = this.offset; this.x = this._gx + (o ? o.x : 0); this.y = this._gy + (o ? o.y : 0); if (this._fit) { this.zoom = this._gz; this._zt = null; } }
+    return this;
+  }
+  zoomTo(z, secs = 0, ease = Camera.smooth, onDone = null){
+    if (secs > 0) this._zt = { z0: this.zoom, z1: z, t: 0, d: secs, ease, onDone }; else { this.zoom = z; this._zt = null; if (onDone) onDone(this); }
+    return this;
+  }
+  zoomAt(z, sx, sy){
+    const a = this.toWorld(sx, sy, Camera._p); const wx = a.x, wy = a.y; this.zoom = z; this._zt = null;
+    const b = this.toWorld(sx, sy, Camera._p), dx = wx - b.x, dy = wy - b.y, bl = this._bl; this.x += dx; this.y += dy;
+    if (bl) { bl.x0 += dx; bl.y0 += dy; bl.gx += dx; bl.gy += dy; }   // both ends of a blend, so the view shifts by exactly this much
+    return this;
+  }
+  moveTo(x, y, secs = 0.5, o = {}){
+    const bl = this._bl;   // under a blend the move starts from where the camera really is, not from the gliding view
+    this._mv = { x0: bl ? bl.gx : this.x, y0: bl ? bl.gy : this.y, x1: x, y1: y, t: 0, d: secs, ease: o.ease || Camera.smooth, hold: !!o.hold, onDone: o.onDone || null };
+    if (o.zoom != null) { this.zoomTo(o.zoom, secs, this._mv.ease); this._mv.zt = this._zt; }
+    return this;
+  }
+  fit(r, secs = 0.5, o = {}){
+    const co = Math.abs(Math.cos(this.angle)), si = Math.abs(Math.sin(this.angle)), w = r.x1 - r.x0, h = r.y1 - r.y0, p = (o.padding || 0) * 2;
+    const fw = w * co + h * si + p, fh = w * si + h * co + p, z = Math.min(fw > 0 ? vw / fw : Infinity, fh > 0 ? vh / fh : Infinity) / scale;
+    return this.moveTo((r.x0 + r.x1) / 2, (r.y0 + r.y1) / 2, secs, { ease: o.ease, hold: o.hold, onDone: o.onDone, zoom: z < Infinity ? z : null });
+  }
+  setBounds(b, secs = 0, ease){ this.bounds = b; if (secs > 0) this._blend(secs, ease); return this; }
+  wait(){ return new Promise(ok => { (this._w || (this._w = [])).push(ok); }); }
+  // A blend: the camera proper carries on unseen in gx, gy while x, y glide from where the view was to there.
+  _blend(secs, ease, gx, gy){
+    const bl = this._bl;
+    this._bl = { x0: this.x, y0: this.y, gx: gx ?? (bl ? bl.gx : this.x), gy: gy ?? (bl ? bl.gy : this.y), t: 0, d: secs, ease: ease || Camera.smooth };
+  }
+  _put(x, y){ const bl = this._bl; if (bl) { bl.gx = x; bl.gy = y; } else { this.x = x; this.y = y; } }
+  release(){ this._stop(); this._lead0(); return this; }
+  _stop(){ const m = this._mv; if (m && m.zt && this._zt === m.zt) this._zt = null; this._mv = null; this.held = false; }   // a move takes its zoom with it
+  get moving(){ return !!this._mv; }
+  addTrauma(a){ this.trauma = Math.min(1, this.trauma + a); }
+  kick(a, angle){
+    if (angle == null) { this.amp = Math.min(this.kickMax, Math.max(this.amp, a)); return; }
+    let x = this._kx + Math.cos(angle) * a, y = this._ky + Math.sin(angle) * a; const l = Math.hypot(x, y);
+    if (l > this.kickMax) { x *= this.kickMax / l; y *= this.kickMax / l; }
+    this._kx = x; this._ky = y;
   }
   get k(){ return scale * this.zoom; }   // CSS pixels per world unit
-
-  // ---- what to look at
-  follow(t, lag = 0, o){
-    if (t !== this.target) { this._pt = null; this.lx = this.ly = 0; }
-    this.target = t; this.targets = null; this.lag = lag; this.lookVel = (o && o.vel) || null;
-    if (o) {
-      if (o.deadzone !== undefined) this.deadzone = typeof o.deadzone === 'number' ? { w: o.deadzone, h: o.deadzone } : o.deadzone;
-      if (o.offset) { this.offset.x = o.offset.x || 0; this.offset.y = o.offset.y || 0; }
-      if (o.lookAhead !== undefined) this.lookAhead = o.lookAhead;
-      if (o.lookMax !== undefined) this.lookMax = o.lookMax;
-      if (o.lookLag !== undefined) this.lookLag = o.lookLag;
+  _lead0(){ this._lx = this._ly = 0; this._seen = false; }
+  // Where the camera wants to be: the target, or the middle of the group (and the zoom that fits it). False when there is nothing to follow.
+  _aim(){
+    const g = this.group, t = this.target;
+    if (!g) { if (!t) return false; this._gx = t.x; this._gy = t.y; return true; }
+    if (!g.length) return false;
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    for (let i = 0; i < g.length; i++) { const o = g[i], r = o.r || 0; if (o.x - r < x0) x0 = o.x - r; if (o.x + r > x1) x1 = o.x + r; if (o.y - r < y0) y0 = o.y - r; if (o.y + r > y1) y1 = o.y + r; }
+    this._gx = (x0 + x1) / 2; this._gy = (y0 + y1) / 2;
+    const f = this._fit;
+    if (f) {   // the room the group needs on screen: its box as a turned view sees it, plus the offset that pushes it off centre
+      const o = this.offset, w = x1 - x0, h = y1 - y0, co = Math.abs(Math.cos(this.angle)), si = Math.abs(Math.sin(this.angle));
+      const ox = o ? Math.abs(o.x) : 0, oy = o ? Math.abs(o.y) : 0;
+      const fw = w * co + h * si + (ox * co + oy * si + f.pad) * 2, fh = w * si + h * co + (ox * si + oy * co + f.pad) * 2;
+      let z = clamp(Math.min(fw > 0 ? vw / fw : Infinity, fh > 0 ? vh / fh : Infinity) / scale, f.min, f.max);
+      const b = this.bounds;   // no farther out than the world fills the view, when maxZoom allows that
+      if (b) z = Math.max(z, Math.min(f.max, Math.max((vw * co + vh * si) / (b.x1 - b.x0), (vw * si + vh * co) / (b.y1 - b.y0)) / scale));
+      this._gz = z < Infinity ? z : this.zoom;   // a single point with no padding and no top limit: nothing to fit, so stay as it is
     }
-    if (t && o && o.blend > 0) this._startPan(t.x + this.offset.x, t.y + this.offset.y, o.blend, o.ease);
-    else { this._stopPan(); if (t && !lag) { this.x = t.x + this.offset.x; this.y = t.y + this.offset.y; } }
-    return this;
+    return true;
   }
-  frame(list, lag = 0, o){
-    this.targets = list || null; this.target = null; this.lag = lag; this.zoomLag = lag; this._stopPan();
-    if (o) {
-      if (o.margin !== undefined) this.frameMargin = o.margin;
-      if (o.minZoom !== undefined) this.frameMin = o.minZoom;
-      if (o.maxZoom !== undefined) this.frameMax = o.maxZoom;
-      if (o.zoomLag !== undefined) this.zoomLag = o.zoomLag;
-    }
-    return this;
-  }
-  snap(){   // one update with no lag, no dead zone and no time passing
-    const lag = this.lag, zl = this.zoomLag, dz = this.deadzone;
-    this._stopPan(); this.lag = this.zoomLag = 0; this.deadzone = null;
-    this.update(0);
-    this.lag = lag; this.zoomLag = zl; this.deadzone = dz;
-    return this;
-  }
-
-  // ---- pans and zooms
-  moveTo(x, y, sec = 0, ease){ this.target = this.targets = null; return this._startPan(x, y, sec, ease); }
-  setBounds(b, sec = 0, ease){ this.bounds = b; return sec > 0 ? this._startPan(this.x, this.y, sec, ease) : Camera._handle(true); }
-  zoomTo(z, sec = 0, ease){ return this._zoom(z, sec, ease, false, 0, 0); }
-  zoomAt(z, sx, sy, sec = 0, ease){ return this._zoom(z, sec, ease, true, sx, sy); }
-  fit(r, sec = 0, ease, margin = 0){
-    this._zoom(Math.min(vw / (r.x1 - r.x0 + margin * 2), vh / (r.y1 - r.y0 + margin * 2)) / scale, sec, ease, false, 0, 0);
-    return this.moveTo((r.x0 + r.x1) / 2, (r.y0 + r.y1) / 2, sec, ease);
-  }
-  // While a pan runs, the follow carries on unseen in gx, gy and x, y glides from where it was to there.
-  _startPan(gx, gy, sec, ease){
-    this._stopPan();
-    if (!(sec > 0)) { this.x = gx; this.y = gy; return Camera._handle(true); }
-    return (this._pan = { fx: this.x, fy: this.y, gx, gy, t: 0, dur: sec, ease: Camera._ease(ease), h: Camera._handle(false) }).h;
-  }
-  _stopPan(){ if (this._pan) { this._pan.h.dead = true; this._pan = null; } }
-  _zoom(to, sec, ease, at, sx, sy){
-    if (this._zt) { this._zt.h.dead = true; this._zt = null; }
-    to = clamp(to, this.zoomMin, this.zoomMax);
-    const z = { from: this.zoom, to, t: 0, dur: sec, ease: Camera._ease(ease), at, sx, sy, wx: 0, wy: 0, h: Camera._handle(!(sec > 0)) };
-    if (at) { const w = this.toWorld(sx, sy); z.wx = w.x; z.wy = w.y; }
-    if (sec > 0) this._zt = z; else this._setZoom(to, z);
-    return z.h;
-  }
-  _setZoom(v, z){
-    this.zoom = v;
-    if (z.at) {   // put the world point back under the screen point
-      const k = this.k, ux = (z.sx - vw / 2) / k, uy = (z.sy - vh / 2) / k, c = Math.cos(this.rot), s = Math.sin(this.rot);
-      this.x = z.wx - (ux * c - uy * s); this.y = z.wy - (ux * s + uy * c);
-    }
-  }
-  static _handle(ended){
-    const h = { dead: ended, ended, done: null,
-      cancel(){ h.dead = true; },
-      then(fn){ if (h.ended) fn(); else { const prev = h.done; h.done = prev ? () => { prev(); fn(); } : fn; } return h; } };
-    return h;
-  }
-  static _end(h){ h.dead = h.ended = true; h.done && h.done(); }
-  static _ease(e){ return typeof e === 'function' ? e : (e && typeof Ease !== 'undefined' && Ease[e]) || Camera._smooth; }
-  static _smooth(t){ return t * t * (3 - 2 * t); }
-  // Smooth noise in -1 .. 1: random values at whole numbers of t, eased between.
-  static _hash(n){ n = (n + 0x9e3779b9) | 0; n = Math.imul(n ^ (n >>> 15), 0x2c1b3c6d); n = Math.imul(n ^ (n >>> 12), 0x297a2d39); return ((n ^ (n >>> 15)) >>> 0) / 2147483648 - 1; }
-  static _noise(t, seed){ const i = Math.floor(t), f = t - i, a = Camera._hash(i + seed); return a + (Camera._hash(i + seed + 1) - a) * f * f * (3 - 2 * f); }
-
-  // ---- shake
-  addTrauma(a){ this.trauma = Math.min(1, this.trauma + a); }
-  kick(a, ang){
-    if (ang === undefined) { this.amp = Math.min(this.kickMax, Math.max(this.amp, a)); return; }
-    this.jx += Math.cos(ang) * a; this.jy += Math.sin(ang) * a;
-    const m = Math.hypot(this.jx, this.jy); if (m > this.kickMax) { this.jx *= this.kickMax / m; this.jy *= this.kickMax / m; }
-  }
-
   update(dt){
-    let endZ = null, endP = null;   // handles that finish in this update resolve at its end, when the camera is consistent
-    const z = this._zt;
-    if (z) {
-      if (z.h.dead) this._zt = null;
-      else {
-        z.t += dt; const done = z.t >= z.dur;
-        this._setZoom(done ? z.to : z.from * Math.pow(z.to / z.from, z.ease(z.t / z.dur)), z);   // by ratio, so a zoom looks even all the way
-        if (done) { this._zt = null; endZ = z.h; }
-      }
-    }
-    let pan = this._pan; if (pan && pan.h.dead) pan = this._pan = null;
-    const cr = Math.cos(this.rot), sr = Math.sin(this.rot), b = this.bounds, t = this.target, g = this.targets;
-    let x = pan ? pan.gx : this.x, y = pan ? pan.gy : this.y, fx = 0, fy = 0, has = false;
-    if (g) {
-      // the group's box along the camera's own axes, so it also fits when the camera is turned
-      let u0 = Infinity, u1 = -Infinity, v0 = Infinity, v1 = -Infinity;
-      for (let i = 0; i < g.length; i++) {
-        const o = g[i], r = o.r || 0, u = o.x * cr + o.y * sr, v = o.y * cr - o.x * sr;
-        if (u - r < u0) u0 = u - r; if (u + r > u1) u1 = u + r; if (v - r < v0) v0 = v - r; if (v + r > v1) v1 = v + r;
-      }
-      if (g.length) {
-        const cu = (u0 + u1) / 2, cv = (v0 + v1) / 2, m = this.frameMargin * 2;
-        fx = cu * cr - cv * sr; fy = cu * sr + cv * cr; has = true;
-        let zf = clamp(Math.min(vw / (u1 - u0 + m), vh / (v1 - v0 + m)) / scale, this.frameMin, this.frameMax);
-        if (b) zf = Math.max(zf, Math.min(this.frameMax, Math.max(vw / (b.x1 - b.x0), vh / (b.y1 - b.y0)) / scale));
-        this.zoom = this.zoomLag ? damp(this.zoom, zf, this.zoomLag, dt) : zf;
-      }
-    } else if (t) {
-      if (this.lookAhead) {
-        const lv = this.lookVel; let vx = 0, vy = 0, known = true;
-        if (lv) { vx = lv.x; vy = lv.y; }
-        else if (typeof t.vx === 'number') { vx = t.vx; vy = t.vy || 0; }
-        else if (dt > 0 && this._pt === t) { vx = (t.x - this._px) / dt; vy = (t.y - this._py) / dt; }
-        else known = false;   // nothing to measure yet: keep the lead as it is
-        if (known) {
-          let ax = vx * this.lookAhead, ay = vy * this.lookAhead; const m = Math.hypot(ax, ay);
-          if (m > this.lookMax) { ax *= this.lookMax / m; ay *= this.lookMax / m; }
-          if (this.lookLag) { this.lx = damp(this.lx, ax, this.lookLag, dt); this.ly = damp(this.ly, ay, this.lookLag, dt); } else { this.lx = ax; this.ly = ay; }
+    const m = this._mv, zt = this._zt, bl = this._bl;
+    if (bl) { this.x = bl.gx; this.y = bl.gy; }
+    if (m) {
+      m.t = m.d > 0 ? Math.min(1, m.t + dt / m.d) : 1; const e = m.ease(m.t);
+      this.x = lerp(m.x0, m.x1, e); this.y = lerp(m.y0, m.y1, e);
+      if (m.t >= 1) { this._mv = null; this.held = m.hold; this._lead0(); }
+    } else if (!this.held && this._aim()) {
+      let gx = this._gx, gy = this._gy;
+      if (this.lead) {
+        const t = this.target, lv = this.leadVel, own = lv || (t && typeof t.vx === 'number' && typeof t.vy === 'number');
+        if (own || (dt > 0 && this._seen)) {
+          let lx = (lv ? lv.x : own ? t.vx : (gx - this._px) / dt) * this.lead, ly = (lv ? lv.y : own ? t.vy : (gy - this._py) / dt) * this.lead; const l = Math.hypot(lx, ly);
+          if (l > this.leadMax) { lx *= this.leadMax / l; ly *= this.leadMax / l; }
+          this._lx = damp(this._lx, lx, this.leadLag, dt); this._ly = damp(this._ly, ly, this.leadLag, dt);
         }
-        if (dt > 0 || this._pt !== t) { this._pt = t; this._px = t.x; this._py = t.y; }
-      } else this.lx = this.ly = 0;
-      fx = t.x + this.offset.x + this.lx; fy = t.y + this.offset.y + this.ly; has = true;
+        if (dt > 0) { this._px = gx; this._py = gy; this._seen = true; }
+        gx += this._lx; gy += this._ly;
+      } else if (this._seen || this._lx || this._ly) this._lead0();
+      const o = this.offset, z = this.deadzone;
+      if (o) { gx += o.x; gy += o.y; }
+      if (z) {   // only the part of the gap that sticks out of the box counts
+        const dx = gx - this.x, dy = gy - this.y, hx = z.w / 2, hy = z.h / 2;
+        gx = this.x + (dx > hx ? dx - hx : dx < -hx ? dx + hx : 0); gy = this.y + (dy > hy ? dy - hy : dy < -hy ? dy + hy : 0);
+      }
+      if (this.lag) { this.x = damp(this.x, gx, this.lag, dt); this.y = damp(this.y, gy, this.lag, dt); } else { this.x = gx; this.y = gy; }
+      const f = this._fit; if (f && !zt) this.zoom = f.lag ? damp(this.zoom, this._gz, f.lag, dt) : this._gz;
     }
-    if (has) {
-      const dz = this.deadzone;
-      if (dz) { fx = clamp(x, fx - dz.w / 2, fx + dz.w / 2); fy = clamp(y, fy - dz.h / 2, fy + dz.h / 2); }   // the nearest place that has the target in the box
-      if (this.lag) { x = damp(x, fx, this.lag, dt); y = damp(y, fy, this.lag, dt); } else { x = fx; y = fy; }
+    if (zt) {   // zoom moves by ratio, so each moment of the zoom looks as fast as the last
+      zt.t = Math.min(1, zt.t + dt / zt.d); const e = zt.ease(zt.t); this.zoom = zt.z0 > 0 && zt.z1 > 0 ? zt.z0 * Math.pow(zt.z1 / zt.z0, e) : lerp(zt.z0, zt.z1, e);
+      if (zt.t >= 1 && this._zt === zt) this._zt = null;
     }
-    // half the view in world units; a turned camera sees a wider box
-    const k = this.k, hw0 = vw / 2 / k, hh0 = vh / 2 / k, ac = Math.abs(cr), as = Math.abs(sr), hw = hw0 * ac + hh0 * as, hh = hw0 * as + hh0 * ac;
+    // Half the view in world units; a turned view covers a wider upright box.
+    const k = this.k, co = Math.abs(Math.cos(this.angle)), si = Math.abs(Math.sin(this.angle)), w2 = vw / 2 / k, h2 = vh / 2 / k;
+    const hw = w2 * co + h2 * si, hh = w2 * si + h2 * co, b = this.bounds;
     if (b) {
-      x = b.x1 - b.x0 < hw * 2 ? (b.x0 + b.x1) / 2 : clamp(x, b.x0 + hw, b.x1 - hw);
-      y = b.y1 - b.y0 < hh * 2 ? (b.y0 + b.y1) / 2 : clamp(y, b.y0 + hh, b.y1 - hh);
+      this.x = b.x1 - b.x0 < hw * 2 ? (b.x0 + b.x1) / 2 : clamp(this.x, b.x0 + hw, b.x1 - hw);
+      this.y = b.y1 - b.y0 < hh * 2 ? (b.y0 + b.y1) / 2 : clamp(this.y, b.y0 + hh, b.y1 - hh);
     }
-    if (pan) {
-      pan.gx = x; pan.gy = y; pan.t += dt;
-      if (pan.t >= pan.dur) { this.x = x; this.y = y; this._pan = null; endP = pan.h; }
-      else { const e = pan.ease(pan.t / pan.dur); this.x = lerp(pan.fx, x, e); this.y = lerp(pan.fy, y, e); }
-    } else { this.x = x; this.y = y; }
-
+    if (bl && this._bl === bl) {
+      bl.gx = this.x; bl.gy = this.y; bl.t = Math.min(1, bl.t + dt / bl.d);
+      if (bl.t >= 1) this._bl = null; else { const e = bl.ease(bl.t); this.x = lerp(bl.x0, bl.gx, e); this.y = lerp(bl.y0, bl.gy, e); }
+    }
     this.trauma = Math.max(0, this.trauma - this.shakeDecay * dt);
     const kd = Math.exp(-this.kickDecay * dt);
     this.amp *= kd; if (this.amp < 0.01) this.amp = 0;
-    this.jx *= kd; this.jy *= kd; if (this.jx * this.jx + this.jy * this.jy < 1e-4) this.jx = this.jy = 0;
-    const tr = this.trauma * this.trauma, s = tr * this.shakeMax + this.amp, sRot = tr * this.shakeRot;
+    this._kx *= kd; this._ky *= kd; if (Math.abs(this._kx) < 0.01 && Math.abs(this._ky) < 0.01) this._kx = this._ky = 0;
+    const q = this.shakeScale, tt = this.trauma * this.trauma, s = (tt * this.shakeMax + this.amp) * q, rmax = tt * this.shakeRoll * q;
     let nx = 0, ny = 0, nr = 0;
-    if (this.shakeFreq) {
-      if (s || sRot) { this._st += dt * this.shakeFreq; nx = Camera._noise(this._st, 0); ny = Camera._noise(this._st, 71); nr = Camera._noise(this._st, 173); }
-    } else {
-      if (s) { nx = Math.random() * 2 - 1; ny = Math.random() * 2 - 1; }
-      if (sRot) nr = Math.random() * 2 - 1;
+    if (s || rmax) {
+      const R = Rng.fx, n = this._n;
+      if (this.shakeFreq > 0) {   // smooth noise: glide between random points, a new one every 1 / shakeFreq seconds
+        this._np += dt * this.shakeFreq; if (this._np > 2) this._np = 1 + this._np % 1;
+        if (this._np >= 1) { this._np -= 1; for (let i = 0; i < 6; i += 2) { n[i] = n[i + 1]; n[i + 1] = R.range(-1, 1); } }
+        const e = Camera.smooth(this._np); nx = lerp(n[0], n[1], e); ny = lerp(n[2], n[3], e); nr = lerp(n[4], n[5], e);
+      } else { nx = R.range(-1, 1); ny = R.range(-1, 1); nr = R.range(-1, 1); }
     }
-    this.ox = nx * s - this.jx; this.oy = ny * s - this.jy; this.orot = nr * sRot;
-    let vhw = hw, vhh = hh;
-    if (this.orot) { const a = this.rot + this.orot, c = Math.abs(Math.cos(a)), sn = Math.abs(Math.sin(a)); vhw = hw0 * c + hh0 * sn; vhh = hw0 * sn + hh0 * c; }
-    const v = this.view, pad = (s + Math.hypot(this.jx, this.jy)) / k;   // the shake can show this much more world on any side
-    v.x0 = this.x - vhw - pad; v.x1 = this.x + vhw + pad; v.y0 = this.y - vhh - pad; v.y1 = this.y + vhh + pad;
-    if (endZ) Camera._end(endZ);
-    if (endP) Camera._end(endP);
+    this.ox = nx * s + this._kx * q; this.oy = ny * s + this._ky * q; this.roll = nr * rmax;
+    // The shake can show this much more world on any side: the offset, plus how far a roll swings the corners.
+    const v = this.view, pad = (s + Math.hypot(this._kx, this._ky) * q) / k + rmax * Math.hypot(w2, h2);
+    v.x0 = this.x - hw - pad; v.x1 = this.x + hw + pad; v.y0 = this.y - hh - pad; v.y1 = this.y + hh + pad;
+    if (m && !this._mv && m.onDone) m.onDone(this);
+    if (zt && zt.t >= 1 && zt.onDone) zt.onDone(this);
+    if (this._w && !this._mv && !this._zt && !this._bl) { const w = this._w; this._w = null; for (let i = 0; i < w.length; i++) w[i](); }
   }
-
-  // ---- drawing and coordinates
-  apply(c, p = 1){
-    const k = this.k * dpr, r = this.rot + this.orot, x = this.x * p, y = this.y * p;
-    let e = dpr * (vw / 2 + this.ox), f = dpr * (vh / 2 + this.oy);
-    if (!r) {
-      e -= x * k; f -= y * k; if (this.pixelSnap) { e = Math.round(e); f = Math.round(f); }
-      c.setTransform(k, 0, 0, k, e, f); return;
-    }
-    const cs = Math.cos(r) * k, sn = Math.sin(r) * k;
-    c.setTransform(cs, -sn, sn, cs, e - (x * cs + y * sn), f - (y * cs - x * sn));
+  apply(c, parallax = 1){
+    const k = this.k * dpr, a = -(this.angle + this.roll), co = Math.cos(a) * k, si = Math.sin(a) * k, x = this.x * parallax, y = this.y * parallax;
+    let e = dpr * (vw / 2 + this.ox) - (co * x - si * y), f = dpr * (vh / 2 + this.oy) - (si * x + co * y);
+    if (this.pixelSnap) { e = Math.round(e); f = Math.round(f); }
+    c.setTransform(co, si, -si, co, e, f);
   }
   applyScreen(c){ c.setTransform(dpr, 0, 0, dpr, 0, 0); }
-  layerView(p, out = {}){
-    const v = this.view, hw = (v.x1 - v.x0) / 2, hh = (v.y1 - v.y0) / 2, x = this.x * p, y = this.y * p;
+  layerView(parallax, out = {}){
+    const v = this.view, hw = (v.x1 - v.x0) / 2, hh = (v.y1 - v.y0) / 2, x = this.x * parallax, y = this.y * parallax;
     out.x0 = x - hw; out.y0 = y - hh; out.x1 = x + hw; out.y1 = y + hh; return out;
   }
   inView(x, y, m = 0){ const v = this.view; return x > v.x0 - m && x < v.x1 + m && y > v.y0 - m && y < v.y1 + m; }
   toWorld(sx, sy, out = {}){
-    const k = this.k, ux = (sx - vw / 2) / k, uy = (sy - vh / 2) / k, r = this.rot;
-    if (!r) { out.x = this.x + ux; out.y = this.y + uy; return out; }
-    const c = Math.cos(r), s = Math.sin(r);
-    out.x = this.x + ux * c - uy * s; out.y = this.y + ux * s + uy * c; return out;
+    const u = (sx - vw / 2) / this.k, v = (sy - vh / 2) / this.k, co = Math.cos(this.angle), si = Math.sin(this.angle);
+    out.x = this.x + u * co - v * si; out.y = this.y + u * si + v * co; return out;
   }
   toScreen(wx, wy, out = {}){
-    const k = this.k, dx = wx - this.x, dy = wy - this.y, r = this.rot;
-    if (!r) { out.x = vw / 2 + dx * k; out.y = vh / 2 + dy * k; return out; }
-    const c = Math.cos(r), s = Math.sin(r);
-    out.x = vw / 2 + (dx * c + dy * s) * k; out.y = vh / 2 + (dy * c - dx * s) * k; return out;
+    const dx = wx - this.x, dy = wy - this.y, co = Math.cos(this.angle), si = Math.sin(this.angle);
+    out.x = vw / 2 + (dx * co + dy * si) * this.k; out.y = vh / 2 + (dy * co - dx * si) * this.k; return out;
   }
 }
+Camera.smooth = t => t * t * (3 - 2 * t);   // the default ease for zoomTo and moveTo
+Camera._p = { x: 0, y: 0 };

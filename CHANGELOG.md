@@ -1,29 +1,47 @@
 # Changelog
 
-## 0.5.0
+## 0.6.0
 
-The camera. Everything that worked in 0.4 works the same: `follow(target, lag)`, `bounds`, `zoom`, `addTrauma`, `kick(pixels)`, `view`, `apply` and the conversions need no changes, and a camera that sets none of the new options moves and shakes exactly as before.
+More camera. Everything in 0.5 works the same, with one change to framing noted below.
 
 ### Added
 
-- **Dead zone**: `cam.follow(player, 0.001, { deadzone: { w: 120, h: 80 } })`. The target moves freely inside a box in the middle of the view, and the camera only moves when the target pushes an edge, so small movements no longer drag the whole screen about.
-- **Look-ahead**: `{ lookAhead: 0.35 }` leads the target by that many seconds of its velocity, up to `lookMax` world units, and swings round smoothly (`lookLag`). The velocity comes from `vel` (any `{ x, y }`, such as an ECS `Vel`), else the target's `vx / vy`, else from how the target moves.
-- **`offset`** aims beside the target, **`blend`** glides to a new target instead of cutting to it, and **`cam.snap()`** jumps to where the follow rests (it replaces `cam.x = t.x; cam.y = t.y` after a respawn).
-- **Framing a group**: `cam.frame(list, lag, { margin, minZoom, maxZoom, zoomLag })` centres on a list of `{ x, y, r? }` and zooms so they all fit. The list is read every update. With bounds set it never zooms out past the world.
-- **Pans and zooms over time**: `moveTo(x, y, seconds, ease)`, `zoomTo(zoom, seconds, ease)`, `fit(rect, seconds, ease, margin)`, and `setBounds(bounds, seconds)` to slide from room to room. Each returns a handle with `cancel()` and `then()`, so a cutscene can `await` them. A zoom moves by ratio, so it looks even from start to end.
-- **`zoomAt(zoom, screenX, screenY)`** zooms with the world point under the cursor held still, for mouse-wheel zoom on a map.
-- **Rotation**: `cam.rot` in radians. `apply`, `toWorld`, `toScreen`, the `view` rect, the bounds and group framing all allow for it.
-- **Smooth shake**: `cam.shakeFreq = 30` shakes along a smooth path at that many wobbles a second, the same at 60 and 240 frames a second. The default (0) is a fresh random offset every update, as before, which gets finer and harsher as the frame rate rises.
-- **Rolling shake**: `cam.shakeRot` rolls the view by up to that many radians at full trauma.
-- **Directed kick**: `cam.kick(pixels, angle)` shoves the camera one way and lets it settle back (recoil, a hit from one side). Shoves add up, to `kickMax`.
-- **Parallax**: `cam.apply(ctx, 0.5)` draws a layer that moves at half the camera's speed, and `cam.layerView(0.5)` is the rect of that layer on screen.
-- `cam.pixelSnap` rounds the view to whole device pixels for crisp pixel art. `toWorld` and `toScreen` take an optional object to fill, so a per-frame call need not allocate. `zoomMin` / `zoomMax` limit `zoomTo`, `zoomAt` and `fit`.
-- Orb Sweep uses look-ahead, the smooth rolling shake and a directed kick when the ship is hit.
+- **Blended follow.** `cam.follow(boss, 0.001, { blend: 0.6 })` glides over to a new target in 0.6 s instead of cutting, and keeps tracking it on the way, so it lands on a target that moved. `ease` picks the curve.
+- **Room to room.** `cam.setBounds(room, 0.5)` swaps the bounds and slides the view into them instead of jumping.
+- **`cam.fit(rect, seconds, { padding, ease, hold, onDone })`**: a `moveTo` that ends with the rect filling the view, at any `angle`.
+- **`cam.wait()`** is a promise for the end of the first update with no move, zoom, blend or slide running, so a cutscene can be written in order: `await cam.moveTo(x, y, 1, { hold: true }).wait();`
+- **Look-ahead from a separate velocity.** `cam.follow(pos, lag, { vel })` reads the lead's velocity from any `{ x, y }`, such as an ECS `Vel`, when the target itself is only a position. It lasts until the next `follow()`; `cam.leadVel` is the field.
+- **`cam.layerView(0.5)`** is the rect a parallax layer shows, for culling what is drawn with `cam.apply(ctx, 0.5)`.
+- Orb Sweep shoves the camera away from the orb that hits the ship.
 
 ### Changes to check when upgrading
 
-- `Camera` has new fields: `rot`, `deadzone`, `offset`, `lookAhead`, `lookMax`, `lookLag`, `lookVel`, `lx`, `ly`, `targets`, `frameMargin`, `frameMin`, `frameMax`, `zoomLag`, `zoomMin`, `zoomMax`, `pixelSnap`, `shakeFreq`, `shakeRot`, `jx`, `jy`, `orot`. A game that hung a property of its own with one of those names on a camera should rename it.
-- `follow()` and `frame()` each end the other, and `moveTo()` and `fit()` end both.
+- `frame()` with `bounds` set no longer zooms out past the world: it stops where the world fills the view (or at `maxZoom`, when the world is too small for that). Before, the view was centred on the world with empty space round it.
+- The camera has new properties `leadVel` and `wait`. `follow()` takes a third argument.
+
+## 0.5.0
+
+The camera. Everything that worked in 0.4 works the same: `follow`, `addTrauma`, `kick`, `bounds`, `view` and the conversions need no changes.
+
+### Added
+
+- **Deadzone.** `cam.deadzone = { w, h }` (world units): the target moves freely inside the box and the camera only moves when it leaves, so small movements no longer drag the whole screen.
+- **Look-ahead.** `cam.lead = 0.35` aims that many seconds in front of the target, using its `vx, vy` if it has them and its measured movement if not. `leadMax` caps the distance and `leadLag` sets how fast the lead swings round when the target turns. `cam.offset = { x, y }` shifts the aim point.
+- **Group framing.** `cam.frame([p1, p2, boss], { padding, minZoom, maxZoom, lag })` centres on several things and zooms to keep them all in shot (their `r` counts). The list is read every update. `zoom: false` only centres.
+- **Zoom.** `cam.zoomTo(z, seconds, ease)` eases by ratio, so the zoom looks as fast at the end as at the start. `cam.zoomAt(z, sx, sy)` zooms and keeps the world point under a screen point where it is, for a mouse wheel or a pinch.
+- **Scripted moves.** `cam.moveTo(x, y, seconds, { ease, zoom, hold, onDone })` glides to a point; following waits until it arrives, or with `hold: true` until `cam.release()`. `cam.moving` and `cam.held` say where it is.
+- `cam.snap()` jumps to where the camera is heading (a respawn, a teleport), ignoring lag and the deadzone. During a `moveTo` it finishes the move.
+- **Rotation.** `cam.angle` turns the view. `toWorld`, `toScreen`, `bounds` and `view` all account for it.
+- **Directional kicks.** `cam.kick(10, angle)` pushes the view one way and lets it settle back, for recoil or a landing. `kick(a)` with no angle is the random jolt it was.
+- **Shake options.** `shakeFreq` (wobbles a second) makes the shake smooth and the same at any frame rate; `shakeRoll` adds a roll of up to that many radians; `shakeScale` scales all shake, for a "screen shake" setting or reduced motion.
+- `cam.apply(ctx, 0.5)` draws a parallax layer at half scroll speed. `cam.pixelSnap = true` lands the view on whole device pixels.
+- `toWorld(sx, sy, out)` and `toScreen(wx, wy, out)` fill an object you pass instead of making one.
+
+### Changes to check when upgrading
+
+- Shake takes its random numbers from `Rng.fx` instead of `Math.random`, so `camera.js` now needs `rng.js` loaded before it (it is, in `dist/bge.js` and in the order of `src/index.txt`).
+- `follow()` now also cancels a `moveTo` and ends a `frame()`.
+- The camera has new properties. A game that stored its own `angle`, `group`, `lead`, `offset`, `deadzone`, `held` or `roll` on a camera should rename them.
 
 ## 0.4.0
 

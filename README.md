@@ -26,7 +26,7 @@ See [`examples/orb-sweep`](examples/orb-sweep) for a complete game in about 150 
 | `collide.js` | `Collide` | Circles, boxes, segments, rays, polygons, overlap separation, pushing a circle out of a wall, bouncing off it, keep-inside-box |
 | `spatial.js` | `SpatialHash` | Fast "what's near here": exact `within()` for things with a size, rough `query()`, and a `nearest()` whose cost doesn't grow with the search range |
 | `particles.js` | `Particles` | Pooled particles in typed arrays: kinds you draw or just describe (shape, size / opacity / colour over life), bursts, emitters that follow objects, named effects, draw layers, culling, blend modes |
-| `camera.js` | `Camera` | Follow with smoothing, a dead zone and look-ahead; frame a group; eased pans, zooms and room changes you can await; world bounds, rotation, parallax; trauma shake, smooth or rolling, and `kick()` jolts; screen and world conversion, view rect for culling |
+| `camera.js` | `Camera` | Follow with smoothing, a deadzone and look-ahead; frame a group and zoom to fit; eased zoom, zoom at the cursor, scripted moves; rotation, world bounds, parallax; trauma shake (smooth, with roll), jolts and directional kicks; screen and world conversion, view rect for culling |
 | `input.js` | `Input`, `keys` | Keyboard, pointer, mouse wheel, touch stick, gamepad, and named actions over all of them |
 | `ui-nav.js` | `UINav` | Gamepad and arrow-key navigation for DOM menus |
 | `audio.js` | `Sound` | Web Audio: synthesized effect recipes with rate limits, sampled sounds, drones |
@@ -90,32 +90,29 @@ Shapes are `circle`, `square`, `rect`, `spark`, `ring`, or an `image` to stamp. 
 ## Camera
 
 ```js
-const cam = new Camera();
-cam.bounds = { x0: 0, y0: 0, x1: 4000, y1: 2000 };
-cam.follow(player, 0.001, {
-  deadzone: { w: 120, h: 80 },   // the player moves freely in this box before the camera does
-  lookAhead: 0.35,               // show more of where the player is heading
-  offset: { x: 0, y: -60 },
-}).snap();                       // start there, no glide
+cam.follow(player, 0.001);                    // smooth follow: 0.1% of the gap is left after a second
+cam.deadzone = { w: 120, h: 80 };             // the player moves freely inside this box before the camera does
+cam.lead = 0.35;                              // look ahead: aim 0.35 s in front of where the player is going
+cam.bounds = { x0: 0, y0: 0, x1: W, y1: H };  // never show past the edge of the world
 
-cam.frame([p1, p2, boss], 0.01, { margin: 100, minZoom: 0.4 });   // keep a whole group on screen, zooming as they spread
+cam.frame([p1, p2, boss], { padding: 80 });   // or keep several things in shot: centres on them and zooms out to fit
+cam.zoomTo(2, 0.4, Ease.outCubic);            // eased zoom
+cam.zoomAt(cam.zoom * 1.1, mouseX, mouseY);   // wheel zoom that keeps the point under the cursor still
+cam.moveTo(door.x, door.y, 1.2, { zoom: 1.5, hold: true, onDone: openDoor });   // a cutscene pan; cam.release() hands back to follow
+await cam.fit(arena, 1, { padding: 40, hold: true }).wait();   // or await it: show a whole rect, then carry on
+cam.follow(player, 0.001, { blend: 0.6 });    // glide back to the player instead of cutting
+cam.setBounds(nextRoom, 0.5);                 // slide into the next room's bounds
 
-await cam.moveTo(door.x, door.y, 0.8, 'inOutCubic');               // a cutscene: pan, zoom in, hand back to the player
-await cam.zoomTo(1.6, 0.4);
-cam.zoomTo(1, 0.6); cam.follow(player, 0.001, { blend: 0.6 });
+cam.addTrauma(0.5);                           // shake that builds with each hit and dies away
+cam.kick(10, angle);                          // a push in one direction: recoil, a landing
+cam.shakeFreq = 30; cam.shakeRoll = 0.03;     // smooth shake that looks the same at any frame rate, with a little roll
+cam.shakeScale = settings.shake;              // one number for a "screen shake" option (0 = off)
 
-cam.setBounds(nextRoom, 0.5);                                      // slide into the next room
-if (Input.wheel) cam.zoomAt(cam.zoom * (Input.wheel < 0 ? 1.1 : 0.9), Input.pointer.x, Input.pointer.y);   // zoom on the cursor
-
-cam.shakeFreq = 30; cam.shakeRot = 0.03;                           // a smooth shake that also rolls
-cam.addTrauma(0.6); cam.kick(10, hitAngle);                        // shake, plus a shove away from the hit
-
-cam.apply(ctx, 0.3); drawMountains(cam.layerView(0.3));            // parallax: a far layer at 0.3 x the camera's movement
-cam.apply(ctx);      drawWorld(cam.view);
-cam.applyScreen(ctx); drawHud();
+cam.apply(ctx, 0.5);                          // a background layer at half scroll speed
+drawHills(cam.layerView(0.5));                // and the part of that layer on screen, for culling it
 ```
 
-A follow can be told where the velocity for look-ahead lives (`vel: world.get(id, 'Vel')`); otherwise it uses the target's `vx / vy`, or measures how the target moves. `moveTo`, `zoomTo`, `zoomAt`, `fit` and `setBounds` take seconds and an ease (a function or a name from `Ease`) and return a handle that can be cancelled or awaited. `cam.rot` turns the view, and `toWorld`, `toScreen`, `view` and the bounds all allow for it. The full list is in the comment at the top of `src/camera.js`.
+`follow()` and `frame()` take over from whatever the camera was doing; `snap()` jumps to where it is heading, for a respawn or a teleport. `cam.angle` turns the view, and conversions, bounds and the view rect all account for it. The full list is in the comment at the top of `src/camera.js`.
 
 ## Rules the engine follows
 
