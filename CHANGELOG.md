@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.5.0
+
+The camera. Everything that worked in 0.4 works the same: `follow`, `addTrauma`, `kick`, `bounds`, `view` and the conversions need no changes.
+
+### Added
+
+- **Deadzone.** `cam.deadzone = { w, h }` (world units): the target moves freely inside the box and the camera only moves when it leaves, so small movements no longer drag the whole screen.
+- **Look-ahead.** `cam.lead = 0.35` aims that many seconds in front of the target, using its `vx, vy` if it has them and its measured movement if not. `leadMax` caps the distance and `leadLag` sets how fast the lead swings round when the target turns. `cam.offset = { x, y }` shifts the aim point.
+- **Group framing.** `cam.frame([p1, p2, boss], { padding, minZoom, maxZoom, lag })` centres on several things and zooms to keep them all in shot (their `r` counts). The list is read every update. `zoom: false` only centres.
+- **Zoom.** `cam.zoomTo(z, seconds, ease)` eases by ratio, so the zoom looks as fast at the end as at the start. `cam.zoomAt(z, sx, sy)` zooms and keeps the world point under a screen point where it is, for a mouse wheel or a pinch.
+- **Scripted moves.** `cam.moveTo(x, y, seconds, { ease, zoom, hold, onDone })` glides to a point; following waits until it arrives, or with `hold: true` until `cam.release()`. `cam.moving` and `cam.held` say where it is.
+- `cam.snap()` jumps to where the camera is heading (a respawn, a teleport), ignoring lag and the deadzone.
+- **Rotation.** `cam.angle` turns the view. `toWorld`, `toScreen`, `bounds` and `view` all account for it.
+- **Directional kicks.** `cam.kick(10, angle)` pushes the view one way and lets it settle back, for recoil or a landing. `kick(a)` with no angle is the random jolt it was.
+- **Shake options.** `shakeFreq` (wobbles a second) makes the shake smooth and the same at any frame rate; `shakeRoll` adds a roll of up to that many radians; `shakeScale` scales all shake, for a "screen shake" setting or reduced motion.
+- `cam.apply(ctx, 0.5)` draws a parallax layer at half scroll speed. `cam.pixelSnap = true` lands the view on whole device pixels.
+- `toWorld(sx, sy, out)` and `toScreen(wx, wy, out)` fill an object you pass instead of making one.
+
+### Changes to check when upgrading
+
+- Shake takes its random numbers from `Rng.fx` instead of `Math.random`, so `camera.js` now needs `rng.js` loaded before it (it is, in `dist/bge.js` and in the order of `src/index.txt`).
+- `follow()` now also cancels a `moveTo` and ends a `frame()`.
+- The camera has new properties. A game that stored its own `angle`, `group`, `lead`, `offset`, `deadzone`, `held` or `roll` on a camera should rename them.
+
 ## 0.4.0
 
 Particles. Everything that worked in 0.3 works the same: existing kinds, `spawn`, `burst` and `emitter` calls need no changes.

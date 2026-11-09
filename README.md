@@ -26,7 +26,7 @@ See [`examples/orb-sweep`](examples/orb-sweep) for a complete game in about 150 
 | `collide.js` | `Collide` | Circles, boxes, segments, rays, polygons, overlap separation, pushing a circle out of a wall, bouncing off it, keep-inside-box |
 | `spatial.js` | `SpatialHash` | Fast "what's near here": exact `within()` for things with a size, rough `query()`, and a `nearest()` whose cost doesn't grow with the search range |
 | `particles.js` | `Particles` | Pooled particles in typed arrays: kinds you draw or just describe (shape, size / opacity / colour over life), bursts, emitters that follow objects, named effects, draw layers, culling, blend modes |
-| `camera.js` | `Camera` | Follow with smoothing, zoom, world bounds, trauma shake and direct `kick()` jolts, screen and world conversion, view rect for culling |
+| `camera.js` | `Camera` | Follow with smoothing, a deadzone and look-ahead; frame a group and zoom to fit; eased zoom, zoom at the cursor, scripted moves; rotation, world bounds, parallax; trauma shake (smooth, with roll), jolts and directional kicks; screen and world conversion, view rect for culling |
 | `input.js` | `Input`, `keys` | Keyboard, pointer, mouse wheel, touch stick, gamepad, and named actions over all of them |
 | `ui-nav.js` | `UINav` | Gamepad and arrow-key navigation for DOM menus |
 | `audio.js` | `Sound` | Web Audio: synthesized effect recipes with rate limits, sampled sounds, drones |
@@ -86,6 +86,29 @@ fx.effect('pickup', [{ kind: 'ring', n: 1, speed: 0, size: 30, life: 0.3, jitter
 ```
 
 Shapes are `circle`, `square`, `rect`, `spark`, `ring`, or an `image` to stamp. Curves take evenly spaced stops, timed stops (`[[0, 1], [0.8, 1], [1, 0]]`) or a function of age. They are turned into lookup tables when the kind is made, so nothing is computed or allocated per particle. Bursts can start in a disc, a ring or a box and fly `outward`; emitters can pulse (`interval`, `count`), wait (`delay`), end themselves (`duration`, `onDone`) and pass on their own motion (`inherit`); a kind's `onDeath` hook chains effects (a rocket that bursts); `layer` lets smoke draw under the actors and sparks over them. The full list is in the comment at the top of `src/particles.js`.
+
+## Camera
+
+```js
+cam.follow(player, 0.001);                    // smooth follow: 0.1% of the gap is left after a second
+cam.deadzone = { w: 120, h: 80 };             // the player moves freely inside this box before the camera does
+cam.lead = 0.35;                              // look ahead: aim 0.35 s in front of where the player is going
+cam.bounds = { x0: 0, y0: 0, x1: W, y1: H };  // never show past the edge of the world
+
+cam.frame([p1, p2, boss], { padding: 80 });   // or keep several things in shot: centres on them and zooms out to fit
+cam.zoomTo(2, 0.4, Ease.outCubic);            // eased zoom
+cam.zoomAt(cam.zoom * 1.1, mouseX, mouseY);   // wheel zoom that keeps the point under the cursor still
+cam.moveTo(door.x, door.y, 1.2, { zoom: 1.5, hold: true, onDone: openDoor });   // a cutscene pan; cam.release() hands back to follow
+
+cam.addTrauma(0.5);                           // shake that builds with each hit and dies away
+cam.kick(10, angle);                          // a push in one direction: recoil, a landing
+cam.shakeFreq = 30; cam.shakeRoll = 0.03;     // smooth shake that looks the same at any frame rate, with a little roll
+cam.shakeScale = settings.shake;              // one number for a "screen shake" option (0 = off)
+
+cam.apply(ctx, 0.5);                          // a background layer at half scroll speed
+```
+
+`follow()` and `frame()` take over from whatever the camera was doing; `snap()` jumps to where it is heading, for a respawn or a teleport. `cam.angle` turns the view, and conversions, bounds and the view rect all account for it. The full list is in the comment at the top of `src/camera.js`.
 
 ## Rules the engine follows
 
