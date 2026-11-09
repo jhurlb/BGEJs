@@ -1,5 +1,31 @@
 # Changelog
 
+## 0.4.0
+
+Particles. Everything that worked in 0.3 works the same: existing kinds, `spawn`, `burst` and `emitter` calls need no changes.
+
+### Added
+
+- **Kinds you describe instead of draw.** `fx.kind('fire', { shape: 'circle', size: [1, 1.4, 0], alpha: [0, 1, 1, 0], colors: ['#fff', '#fd0', '#f40'] })`. Shapes: `circle`, `square`, `rect`, `spark`, `ring`, or `image:` a canvas or image to stamp. A kind with its own `draw()` works as before.
+- **Size, opacity and colour over a particle's life.** A curve is a number, evenly spaced stops, timed stops (`[[0, 1], [0.8, 1], [1, 0]]`) or a function of age. Curves and colour ramps become lookup tables when the kind is made, so drawing computes and allocates nothing per particle. A `draw()` of your own can use them through `Particles.curve`, `Particles.ramp` and `Particles.at`; `Particles.rgba` parses a colour.
+- **Effects**: several bursts under one name. `fx.effect(name, layers)` defines one and `fx.play(name, x, y, { scale, count, angle, spread, color, vx, vy })` fires it.
+- **More ready-made pieces in `Particles.basic`**: kinds `ring` (a shock wave), `flash` and `ember`, and effects `explosion`, `hit`, `puff` and `sparkle`.
+- **Burst options**: `inner` (with `radius`: spawn in a ring), `box: [w, h]`, and `outward: true` (fly away from the centre).
+- **Emitter options**: `interval` + `count` (pulses instead of a steady rate), `delay`, `duration` with `onDone`, and `inherit` (a share of the emitter's own velocity goes to its particles).
+- **Kind options**: `wind` (sideways pull, as `gravity` is the vertical one), `layer` with `fx.draw(ctx, view, layer)` to draw some kinds under the actors and others over them, and `onDeath(s, x, y, vx, vy)` to chain effects.
+- `fx.warm(seconds)` runs the system ahead, so a scene can open with its smoke already risen.
+
+### Faster
+
+- `overflow: 'replace'` finds the oldest particle in constant time instead of searching every particle for each one spawned. A full system of 8,192 with 300 spawned a frame went from 2.2 ms to 0.4 ms a frame; 2,048 with 100 a frame from 0.29 ms to 0.11 ms.
+
+### Changes to check when upgrading
+
+- A kind definition's `size`, `alpha`, `colors`, `shape`, `image`, `wind`, `layer` and `onDeath` now mean something. A kind that happened to carry a property with one of those names for its own `draw()` should rename it.
+- `Particles.basic` now also defines kinds `ring`, `flash` and `ember`. A kind of your own with one of those names should be defined after `basic()`, not before, or `basic()` replaces it.
+- `burst()` takes its random numbers from `Rng.fx` in a different order, so a game that seeds `Rng.fx` to get the same sparks every run will get different ones.
+- The private `Particles._swap` is gone (`_kill` replaces it).
+
 ## 0.3.0
 
 ### Fixed

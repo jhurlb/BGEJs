@@ -25,7 +25,7 @@ See [`examples/orb-sweep`](examples/orb-sweep) for a complete game in about 150 
 | `store.js` | `Store` | Namespaced `localStorage` with defaults and versioned migrations; never throws, and falls back to memory when storage is blocked |
 | `collide.js` | `Collide` | Circles, boxes, segments, rays, polygons, overlap separation, pushing a circle out of a wall, bouncing off it, keep-inside-box |
 | `spatial.js` | `SpatialHash` | Fast "what's near here": exact `within()` for things with a size, rough `query()`, and a `nearest()` whose cost doesn't grow with the search range |
-| `particles.js` | `Particles` | Pooled particles in typed arrays: your own kinds, bursts, emitters that follow objects, culling, blend modes |
+| `particles.js` | `Particles` | Pooled particles in typed arrays: kinds you draw or just describe (shape, size / opacity / colour over life), bursts, emitters that follow objects, named effects, draw layers, culling, blend modes |
 | `camera.js` | `Camera` | Follow with smoothing, zoom, world bounds, trauma shake and direct `kick()` jolts, screen and world conversion, view rect for culling |
 | `input.js` | `Input`, `keys` | Keyboard, pointer, mouse wheel, touch stick, gamepad, and named actions over all of them |
 | `ui-nav.js` | `UINav` | Gamepad and arrow-key navigation for DOM menus |
@@ -66,6 +66,27 @@ Loop.start({
 });
 ```
 
+## Particles
+
+A kind can be described instead of drawn. Size, opacity and colour change over each particle's life, from birth to death:
+
+```js
+fx.kind('fire', {
+  shape: 'circle', blend: 'lighter', gravity: -120, drag: 0.95,
+  size:   [0.6, 1, 0.2],                      // x the particle's own size
+  alpha:  [0, 0.7, 0.5, 0],                   // fade in, then out
+  colors: ['#fff', '#fd5', '#f62', '#611'],   // white hot to dark red
+});
+const fire = fx.emitter('fire', { x: 0, y: 0, rate: 150, speed: [5, 40], life: [0.5, 1], size: [5, 10], box: [50, 6] });
+fx.warm(2);                                   // already burning when the scene opens
+
+fx.play('explosion', x, y);                   // a ready-made effect: smoke, flash, shock ring, embers and sparks
+fx.play('hit', x, y, { angle, spread: 1.5 }); // aimed
+fx.effect('pickup', [{ kind: 'ring', n: 1, speed: 0, size: 30, life: 0.3, jitter: 0 }, { kind: 'glow', n: 12, speed: [40, 120] }]);   // your own
+```
+
+Shapes are `circle`, `square`, `rect`, `spark`, `ring`, or an `image` to stamp. Curves take evenly spaced stops, timed stops (`[[0, 1], [0.8, 1], [1, 0]]`) or a function of age. They are turned into lookup tables when the kind is made, so nothing is computed or allocated per particle. Bursts can start in a disc, a ring or a box and fly `outward`; emitters can pulse (`interval`, `count`), wait (`delay`), end themselves (`duration`, `onDone`) and pass on their own motion (`inherit`); a kind's `onDeath` hook chains effects (a rocket that bursts); `layer` lets smoke draw under the actors and sparks over them. The full list is in the comment at the top of `src/particles.js`.
+
 ## Rules the engine follows
 
 - Engine files never read a game's state. Games build on the engine, not the other way round.
@@ -76,7 +97,7 @@ Loop.start({
 
 ## Speed
 
-Measured in Node on the same machine, spawning and updating 5,000 particles a frame: the old approach (one ECS entity per particle) took about 2.1 to 2.4 ms a frame, and `Particles` takes about 0.15 ms, 13 to 17 times faster. Particles also produce no garbage, so they don't cause GC pauses.
+Measured in Node on the same machine, spawning and updating 5,000 particles a frame: the old approach (one ECS entity per particle) took about 2.1 to 2.4 ms a frame, and `Particles` takes about 0.15 ms, 13 to 17 times faster. Particles also produce no garbage, so they don't cause GC pauses. With `overflow: 'replace'` a full system finds its oldest particle in constant time: at 8,192 particles with 300 new ones a frame, a frame takes about 0.4 ms, where the search 0.3 did took 2.2 ms.
 
 `SpatialHash.nearest` searches outwards cell by cell and stops when nothing farther can win. With 2,000 things on a 4,000 x 4,000 map, 2,000 searches take about 3 ms whatever the range; scanning every cell in range, as 0.2 did, took 9 ms at a range of 200, 84 ms at 1,000 and 950 ms across the whole map.
 

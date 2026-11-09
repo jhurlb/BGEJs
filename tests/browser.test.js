@@ -120,3 +120,26 @@ test('Sound: muting reaches the master gain, drones stop cleanly, a missing file
   assert.deepStrictEqual(r, { before: false, ok: true, g0: 0, drones: 0, muted: false, err: 'Sound: nope.ogg (404)' });
   assert.deepStrictEqual(pg.errors, []);
 });
+
+test('Particles: effects and shape kinds paint real pixels, and a ramp takes any CSS colour', async () => {
+  const pg = await page();
+  await pg.goto(`${srv.base}tests/blank.html`);
+  const r = await pg.evaluate(() => {
+    const px = (x, y) => [...ctx.getImageData(x, y, 1, 1).data].slice(0, 3);
+    const wipe = () => { ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.globalAlpha = 1; ctx.fillStyle = '#000'; ctx.fillRect(0, 0, cv.width, cv.height); };
+    const fx = Particles.basic(new Particles(500));
+    wipe(); fx.play('explosion', 200, 200); fx.update(0.03); fx.draw(ctx);
+    const flash = px(200, 200), far = px(600, 500), state = [ctx.globalAlpha, ctx.globalCompositeOperation];
+    // a stamped image, and a colour ramp from names and hsl()
+    const dot = document.createElement('canvas'); dot.width = dot.height = 8; const g = dot.getContext('2d'); g.fillStyle = '#0f0'; g.fillRect(0, 0, 8, 8);
+    fx.clear(); fx.kind('stamp', { image: dot, alpha: 1, rotate: true }); fx.kind('named', { shape: 'square', alpha: 1, colors: ['red', 'hsl(240, 100%, 50%)'] });
+    fx.spawn('stamp', 100, 100, 0, 0, 1, 1, '#fff', 10, 0.3); fx.spawn('named', 300, 100, 0, 0, 1, 1, '#fff', 10); fx.spawn('named', 400, 100, 0, 0, 0.001, 1, '#fff', 10);
+    wipe(); fx.draw(ctx);
+    let bad = ''; try { Particles.ramp(['red', 'notacolour']); } catch (e) { bad = e.message; }
+    return { flash, far, state, stamp: px(100, 100), young: px(300, 100), old: px(400, 100), ramp: Particles.ramp(['white', 'transparent'], 2), bad };
+  });
+  assert.ok(r.flash[0] > 200 && r.flash[1] > 150, JSON.stringify(r.flash));   // the flash is bright at the centre
+  assert.deepStrictEqual({ ...r, flash: 0 }, { flash: 0, far: [0, 0, 0], state: [1, 'source-over'], stamp: [0, 255, 0], young: [255, 0, 0], old: [0, 0, 255],
+    ramp: ['rgba(255,255,255,1)', 'rgba(255,255,255,0.5)', 'rgba(0,0,0,0)'], bad: `Particles: can't read the colour "notacolour"` });
+  assert.deepStrictEqual(pg.errors, []);
+});

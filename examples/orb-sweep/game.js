@@ -52,11 +52,12 @@ function pulse(){
   if (pulseCd > 0) return; pulseCd = 0.6;
   const R = 170; Sound.play('pulse'); cam.addTrauma(0.25);
   fx.burst('dot', ship.x, ship.y, 40, { speed: R * 2.4, life: 0.35, size: 3, color: '#7cf', jitter: 0.1 });
+  fx.burst('ring', ship.x, ship.y, 1, { speed: 0, life: 0.35, size: R, color: '#7cf', jitter: 0 });
   for (const o of hash.within(ship.x, ship.y, R, [])) popOrb(o);   // its own array: popOrb spawns, and the shared one may be reused
 }
 Events.on('shipHit', o => {
   lives--; ship.inv = 1.5; cam.addTrauma(0.8); Loop.hitstop(0.12); Sound.play('hurt');
-  fx.burst('smoke', ship.x, ship.y, 20, { speed: [20, 120], life: 1, size: 10, color: '#556' });
+  fx.play('explosion', ship.x, ship.y, { scale: 0.8 });
   popOrb(o);
   if (lives <= 0) clock.after(0.6, () => Scenes.push('over'));
 });
