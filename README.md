@@ -15,7 +15,7 @@ See [`examples/orb-sweep`](examples/orb-sweep) for a complete game in about 150 
 | File | Global | What it does |
 | --- | --- | --- |
 | `core.js` | `cv`, `ctx`, `dpr`, `vw`, `vh`, `scale`, `VIEW`, `resize()` | Canvas setup and resizing; helpers `clamp`, `lerp`, `invLerp`, `remap`, `damp`, `angDiff`, `dist2`, `fmtTime`, `$`, `escapeHtml`, `TAU` |
-| `rng.js` | `Rng`, `rand`, `pickW`, `shuffle` | Seedable random numbers (sfc32): `float`, `range`, `int`, `chance`, `pick`, `shuffle`, `weighted`, `gauss`, save and restore state |
+| `rng.js` | `Rng`, `rand`, `pickW`, `shuffle` | Seedable random numbers (sfc32): `float`, `range`, `int`, `chance`, `pick`, `shuffle`, `weighted`, `gauss`, save and restore state. `Rng.main` for gameplay, `Rng.fx` for looks and sounds so replays stay exact |
 | `events.js` | `Events`, `Bus` | Publish / subscribe: `on`, `once`, `off`, `emit` |
 | `ecs.js` | `World`, `system`, `runSystems`, `ecsBasics` | Entities, components and ordered systems by phase; cached `list()` queries; deferred destroy |
 | `loop.js` | `Loop` | The frame loop: fixed or variable step, `timeScale`, `hitstop`, pause, keeps running in a hidden tab when you ask |
@@ -26,11 +26,11 @@ See [`examples/orb-sweep`](examples/orb-sweep) for a complete game in about 150 
 | `collide.js` | `Collide` | Circles, boxes, segments, rays, polygons, overlap separation, keep-inside-box |
 | `spatial.js` | `SpatialHash` | Fast "what's near here" queries and nearest-match search |
 | `particles.js` | `Particles` | Pooled particles in typed arrays: your own kinds, bursts, emitters that follow objects, culling, blend modes |
-| `camera.js` | `Camera` | Follow with smoothing, zoom, world bounds, trauma shake, screen and world conversion, view rect for culling |
+| `camera.js` | `Camera` | Follow with smoothing, zoom, world bounds, trauma shake and direct `kick()` jolts, screen and world conversion, view rect for culling |
 | `input.js` | `Input`, `keys` | Keyboard, pointer, touch stick, gamepad, and named actions over all of them |
 | `ui-nav.js` | `UINav` | Gamepad and arrow-key navigation for DOM menus |
 | `audio.js` | `Sound` | Web Audio: synthesized effect recipes with rate limits, sampled sounds, drones |
-| `music.js` | `MusicPlayer` | Streamed music playlists with volume, mute and the "play after first gesture" rule handled |
+| `music.js` | `MusicPlayer` | Streamed music playlists with volume, mute, pause / resume, loop points and the "play after first gesture" rule handled |
 | `assets.js` | `Assets` | Preload images, sounds, JSON and text with progress |
 | `sprites.js` | `Sprites` | Draw once to an offscreen canvas and stamp many times, with a least-recently-used cache |
 | `look.js` | `inkOn`, `INK`, `filmFx`, `FILM` | Optional cartoon look: automatic ink outlines on solid fills, plus an old-film overlay |

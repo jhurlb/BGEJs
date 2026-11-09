@@ -52,3 +52,20 @@ test('Orb Sweep: title, play, pulse pops orbs, game over', async () => {
   await pg.waitForFunction(() => Scenes.current === 'over', null, { timeout: 10000 });
   assert.deepStrictEqual(pg.errors, []);
 });
+
+test('MusicPlayer: a paused track stays paused through clicks, stop(true) unloads', async () => {
+  const pg = await page();
+  await pg.goto(`${srv.base}tests/blank.html`);
+  const r = await pg.evaluate(async () => {
+    const m = new MusicPlayer([{ src: 'none-a.mp3', name: 'A' }, { src: 'none-b.mp3', name: 'B' }]);
+    m.play(); const a = { want: m.want, src: m.el.src.split('/').pop() };
+    m.pause(); let played = 0; m.el.play = () => { played++; return Promise.resolve(); };
+    document.body.click(); dispatchEvent(new KeyboardEvent('keydown', { key: 'x' }));
+    const b = { held: m.held, played };
+    m.resume(); const c = { held: m.held, played };
+    m.next(); const d = m.idx;
+    m.stop(true); return { a, b, c, d, src: m.el.getAttribute('src'), want: m.want };
+  });
+  assert.deepStrictEqual(r, { a: { want: true, src: 'none-a.mp3' }, b: { held: true, played: 0 }, c: { held: false, played: 1 }, d: 1, src: null, want: false });
+  assert.deepStrictEqual(pg.errors, []);
+});

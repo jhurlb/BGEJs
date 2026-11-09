@@ -67,7 +67,7 @@ test('Rng is repeatable from a seed and its helpers stay in range', () => {
   const r = new X.Rng(1);
   for (let i = 0; i < 2000; i++) { const f = r.float(), n = r.int(3, 5); assert.ok(f >= 0 && f < 1); assert.ok(n >= 3 && n <= 5 && Number.isInteger(n)); }
   const s = r.state(), v1 = r.float(); r.restore(s); assert.strictEqual(r.float(), v1);
-  X.Rng.seed(99); const g1 = X.rand(0, 1); X.Rng.seed(99); assert.strictEqual(X.rand(0, 1), g1);
+  X.Rng.seed(99); const g1 = X.rand(0, 1); X.Rng.fx.float(); X.Rng.seed(99); X.Rng.fx.float(); X.Rng.fx.float(); assert.strictEqual(X.rand(0, 1), g1);   // Rng.fx never disturbs Rng.main
 });
 
 test('shuffle keeps every item and is unbiased', () => {
@@ -174,4 +174,7 @@ test('Camera follows, clamps to bounds and converts coordinates', () => {
   cam.bounds = { x0: 0, y0: 0, x1: 2000, y1: 2000 }; cam.follow({ x: 0, y: 0 }); cam.update(0.016);
   near(cam.view.x0, 0); near(cam.view.y0, 0);
   assert.ok(cam.inView(10, 10)); assert.ok(!cam.inView(-50, 10));
+  cam.kick(8); assert.strictEqual(cam.amp, 8); cam.kick(4); assert.strictEqual(cam.amp, 8);   // the bigger jolt wins
+  cam.update(0.5); assert.ok(cam.amp < 8 * Math.exp(-3.9) && cam.amp > 0);
+  cam.kick(100); assert.strictEqual(cam.amp, cam.kickMax);
 });

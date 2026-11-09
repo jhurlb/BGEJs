@@ -5,6 +5,9 @@
      const r = new Rng(42); r.float(); r.range(2, 5); r.int(0, 9); r.pick(list); r.chance(0.3);
      r.shuffle(list); r.weighted([['a', 3], ['b', 1]]); r.angle(); r.gauss();
    Code that calls Math.random directly is not affected by the seed.
+   Rng.fx is a second, never-seeded stream for looks and sounds (shake, sparkle, pitch wobble). Keep those off Rng.main:
+   anything that runs a different number of times per play-through (rendering, rate-limited sounds) would otherwise
+   shift the gameplay numbers and break replays.
    ================================================================ */
 class Rng {
   constructor(seed = (Math.random() * 2 ** 32) >>> 0){ this.seed(seed); }
@@ -42,6 +45,7 @@ class Rng {
 }
 Rng.main = new Rng();
 Rng.seed = n => Rng.main.seed(n);
+Rng.fx = new Rng();
 
 // Global shorthands on Rng.main
 const rand = (a, b) => Rng.main.range(a, b);

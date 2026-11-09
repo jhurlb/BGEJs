@@ -1,5 +1,5 @@
 'use strict';
-/* BGEjs 0.1.0: a small browser game engine. Built from src/ by scripts/bundle.js; edit src/, not this file. */
+/* BGEjs 0.2.0: a small browser game engine. Built from src/ by scripts/bundle.js; edit src/, not this file. */
 
 /* ---- src/core.js ---- */
 /* ================================================================
@@ -48,6 +48,9 @@ resize();
      const r = new Rng(42); r.float(); r.range(2, 5); r.int(0, 9); r.pick(list); r.chance(0.3);
      r.shuffle(list); r.weighted([['a', 3], ['b', 1]]); r.angle(); r.gauss();
    Code that calls Math.random directly is not affected by the seed.
+   Rng.fx is a second, never-seeded stream for looks and sounds (shake, sparkle, pitch wobble). Keep those off Rng.main:
+   anything that runs a different number of times per play-through (rendering, rate-limited sounds) would otherwise
+   shift the gameplay numbers and break replays.
    ================================================================ */
 class Rng {
   constructor(seed = (Math.random() * 2 ** 32) >>> 0){ this.seed(seed); }
@@ -85,6 +88,7 @@ class Rng {
 }
 Rng.main = new Rng();
 Rng.seed = n => Rng.main.seed(n);
+Rng.fx = new Rng();
 
 // Global shorthands on Rng.main
 const rand = (a, b) => Rng.main.range(a, b);
@@ -618,7 +622,8 @@ Particles.basic = sys => {
    CAMERA: a 2D view onto the world with follow, zoom and trauma-based screen shake.
      const cam = new Camera();             // uses the core globals vw, vh, dpr, scale
      cam.follow(player, 0.001);            // track a target; the number is the share of the gap left after 1 s (0 = snap)
-     cam.addTrauma(0.5);                   // shake = trauma squared, decays at shakeDecay per second
+     cam.addTrauma(0.5);                   // smooth shake: trauma squared x shakeMax, trauma falls by shakeDecay per second
+     cam.kick(6);                          // or a direct jolt in pixels that dies away exponentially (kickDecay per second)
      cam.update(dt);  cam.apply(ctx);      // sets the canvas transform; draw the world after this
      cam.view                              // { x0, y0, x1, y1 } visible world rect (for culling and Particles.draw)
      cam.inView(x, y, margin);  cam.toWorld(sx, sy);  cam.toScreen(wx, wy);   // screen = CSS pixels
@@ -628,11 +633,12 @@ Particles.basic = sys => {
 class Camera {
   constructor(){
     this.x = 0; this.y = 0; this.zoom = 1; this.target = null; this.lag = 0; this.bounds = null;
-    this.trauma = 0; this.shakeMax = 16; this.shakeDecay = 1.6; this.ox = 0; this.oy = 0;
+    this.trauma = 0; this.shakeMax = 16; this.shakeDecay = 1.6; this.amp = 0; this.kickDecay = 8; this.kickMax = 16; this.ox = 0; this.oy = 0;
     this.view = { x0: 0, y0: 0, x1: 0, y1: 0 };
   }
   follow(t, lag = 0){ this.target = t; this.lag = lag; if (t && !lag) { this.x = t.x; this.y = t.y; } return this; }
   addTrauma(a){ this.trauma = Math.min(1, this.trauma + a); }
+  kick(a){ this.amp = Math.min(this.kickMax, Math.max(this.amp, a)); }
   get k(){ return scale * this.zoom; }   // CSS pixels per world unit
   update(dt){
     const t = this.target;
@@ -643,7 +649,8 @@ class Camera {
       this.y = b.y1 - b.y0 < hh * 2 ? (b.y0 + b.y1) / 2 : clamp(this.y, b.y0 + hh, b.y1 - hh);
     }
     this.trauma = Math.max(0, this.trauma - this.shakeDecay * dt);
-    const s = this.trauma * this.trauma * this.shakeMax;
+    this.amp *= Math.exp(-this.kickDecay * dt); if (this.amp < 0.01) this.amp = 0;
+    const s = this.trauma * this.trauma * this.shakeMax + this.amp;
     this.ox = s ? (Math.random() * 2 - 1) * s : 0; this.oy = s ? (Math.random() * 2 - 1) * s : 0;
     const v = this.view; v.x0 = this.x - hw; v.x1 = this.x + hw; v.y0 = this.y - hh; v.y1 = this.y + hh;
   }
@@ -851,24 +858,29 @@ const Sound = {
    "no sound before a gesture" rule handled for you.
      const bgm = new MusicPlayer([{ src: 'music/a.mp3', name: 'A' }, { src: 'music/b.mp3', name: 'B' }], { loop: false, vol: 0.7 });
      bgm.play();  bgm.next();  bgm.stop();  bgm.volume = 0.5;  bgm.muted = true;  bgm.playing   // track name or ''
+     bgm.pause(); bgm.resume()   // hold it (a pause menu) without losing its place; gestures won't restart it
+     bgm.stop(true)   // stop and unload, so the next play() starts the current track from the top
+     bgm.loopFrom = 6.5   // a single looping track goes back here instead of 0 (skip an intro)
    With one track and loop: true it repeats; with several it moves to the next when one ends. play() before the
    first click or key press is retried on the next gesture.
    ================================================================ */
 class MusicPlayer {
   constructor(tracks, o = {}){
-    this.tracks = tracks; this.idx = o.start ?? 0; this.loop = o.loop ?? tracks.length === 1; this._vol = o.vol ?? 0.75; this._muted = false; this.want = false;
+    this.tracks = tracks; this.idx = o.start ?? 0; this.loopFrom = o.loopFrom || 0; this.loop = o.loop ?? tracks.length === 1; this._vol = o.vol ?? 0.75; this._muted = false; this.want = false; this.held = false;
     this.el = new Audio(); this.el.preload = 'none';
-    this.el.addEventListener('ended', () => { if (this.loop && this.tracks.length === 1) { this.el.currentTime = 0; this._play(); } else this.next(); });
-    for (const ev of ['pointerup', 'keydown', 'touchend', 'click']) addEventListener(ev, () => { if (this.want && this.el.paused) this._play(); }, { capture: true, passive: true });
-    document.addEventListener('visibilitychange', () => { if (document.hidden) this.el.pause(); else if (this.want) this._play(); });
+    this.el.addEventListener('ended', () => { if (this.loop && this.tracks.length === 1) { this.el.currentTime = this.loopFrom; if (this.want && !this.held) this._play(); } else this.next(); });
+    for (const ev of ['pointerup', 'keydown', 'touchend', 'click']) addEventListener(ev, () => { if (this.want && !this.held && this.el.paused) this._play(); }, { capture: true, passive: true });
+    document.addEventListener('visibilitychange', () => { if (document.hidden) this.el.pause(); else if (this.want && !this.held) this._play(); });
   }
   _play(){ this.el.volume = this._vol; this.el.muted = this._muted || !this._vol; this.el.play().catch(() => {}); }
   play(i){
     if (i !== undefined || !this.el.src) { if (i !== undefined) this.idx = i; this.el.src = this.tracks[this.idx].src; }
-    this.want = true; this._play();
+    this.want = true; this.held = false; this._play();
   }
-  next(){ this.idx = (this.idx + 1) % this.tracks.length; this.el.src = this.tracks[this.idx].src; if (this.want) this._play(); }
-  stop(){ this.want = false; this.el.pause(); }
+  pause(){ this.held = true; this.el.pause(); }
+  resume(){ this.held = false; if (this.want) this._play(); }
+  next(){ this.idx = (this.idx + 1) % this.tracks.length; this.el.src = this.tracks[this.idx].src; if (this.want && !this.held) this._play(); }
+  stop(unload = false){ this.want = false; this.held = false; this.el.pause(); if (unload) { this.el.removeAttribute('src'); this.el.load(); } }
   get playing(){ return this.want && !this.el.paused ? this.tracks[this.idx].name || this.tracks[this.idx].src : ''; }
   get volume(){ return this._vol; } set volume(v){ this._vol = v; this.el.volume = v; this.el.muted = this._muted || !v; }
   get muted(){ return this._muted; } set muted(m){ this._muted = m; this.el.muted = m || !this._vol; }
